@@ -1,0 +1,282 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% OIST Doctoral Thesis - Final bound version
+% LaTeX Template
+% Version 0.2 (2016/04/06)
+%
+% This version is the final binding version which will be published.
+%
+% Original author:
+% Jeremie Gillet
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%----------------------------------------------------------------------------------------
+%	PACKAGES AND OTHER DOCUMENT CONFIGURATIONS
+%----------------------------------------------------------------------------------------
+
+\documentclass[12pt, oneside]{book} % 12 pt font, one-sided book style
+
+\usepackage[a4paper, includehead, headheight=1cm, inner=3cm ,outer=2.5cm, top=2.5 cm, bottom=2.5cm]{geometry}  % Changing size of document
+\usepackage[english]{babel} % The document is in English
+\usepackage[utf8]{inputenc} % UTF8 encoding
+\usepackage[T1]{fontenc} % Font encoding
+\usepackage{setspace}
+\usepackage{wrapfig}
+\usepackage{float}
+%\usepackage{epstopdf}
+
+%\def\verbatim@font{\linespread{0.5}\normalfont\ttfamily}
+
+%\usepackage{graphicx} % For including images
+
+% The below packages copied from 2FA paper 
+\usepackage{epsfig,graphicx,float,color,verbatim,subfigure,amssymb}
+\usepackage{multirow}
+\usepackage[hyphens]{url}
+\usepackage{hyphenat}
+\usepackage[normalem]{ulem}
+
+\usepackage{pifont}% http://ctan.org/pkg/pifont
+\usepackage{amsmath}
+\usepackage{array}
+
+\tolerance=1000000 % Context swap
+
+
+%\graphicspath{{./Images/}} % Specifies the directory where pictures are stored
+
+\usepackage{longtable} % tables that can span several pages
+\usepackage[bf]{caption} % caption: FIG in bold
+\usepackage{fancyhdr} % For the headers
+
+\newcommand{\numberedchapter}{ % Preparation for numbered chapters
+	\cleardoublepage % To make sure the previous headers are passed
+	\fancyhead[RE]{{\bfseries \leftmark}}% Headers for left pages
+	\fancyhead[LO]{{\bfseries \rightmark}}}% Headers for right pages
+\newcommand{\unnumberedchapter}[1]{ % Preparation for unnumbered chapters
+	\cleardoublepage % To make sure the previous headers are passed
+	\addcontentsline{toc}{chapter}{#1} % Also adds the chapter name to the Contents
+	\fancyhead[RE]{{\bfseries #1}} % Headers for left pages
+	\fancyhead[LO]{}}%Headers for right pages
+
+\usepackage{emptypage} % No headers on an empty page
+
+\usepackage{eso-pic} % For the background picture on the title page
+\newcommand\BackgroundPic{%
+\put(-250,-160){%
+\parbox[b][\paperheight]{\paperwidth}{%
+\vfill
+\centering
+%\includegraphics[width=\paperwidth]{symbol.jpg}%
+\vfill
+}}}
+
+\usepackage{hyperref} % Adds clickable links at references
+
+\newcommand{\cs}[1]{{\color{blue}\textbf{Craig: \textit{#1}}}}
+\newcommand{\yl}[1]{{\color{cyan}\textbf{Yu: \textit{#1}}}}
+\newcommand{\etal}{et al.}
+%----------------------------------------------------------------------------------------
+%	ADD YOUR CUSTOM VALUES, COMMANDS AND PACKAGES
+%----------------------------------------------------------------------------------------
+
+% Open Preamble/mydefinitions.tex and enter some values (name, thesis title...) 
+% and include your own custom LaTeX functions and packages
+
+\input{Preamble/mydefinitions}
+
+%\linespread{1.5} % Setup the line space to 1.5
+
+% \setstretch{1.5}
+
+\renewcommand{\baselinestretch}{1.5}
+
+\captionsetup[figure]{font={stretch=1.5}}
+\captionsetup[table]{font={stretch=1.5}} 
+
+
+\makeatletter
+\setlength{\@fptop}{0pt}
+\makeatother
+
+\begin{document}
+
+%----------------------------------------------------------------------------------------
+%	TITLE PAGE
+%----------------------------------------------------------------------------------------
+
+\pagestyle{empty} % No page numbers
+\frontmatter % Use roman page numbering style (i, ii, iii, iv...) for the preamble pages
+
+\begin{titlepage}
+\begin{center}
+
+\vspace{-5.0cm}
+
+\textcolor{black}{\Large\textbf{\thetitle}}
+
+\vspace{0.2cm}
+
+by
+
+\vspace{0.2cm}
+
+\todo{Your name here!}
+
+\vspace{0.55cm}
+
+A Dissertation Proposal
+
+\vspace{0.2cm}
+
+Submitted to the Faculty
+
+\vspace{0.2cm}
+
+of the
+
+\vspace{0.2cm}
+
+WORCESTER POLYTECHNIC INSTITUTE
+
+\vspace{0.2cm}
+
+In partial fulfillment of the requirements for the 
+
+\vspace{0.2cm}
+
+Degree of Doctor of Philosophy
+
+\vspace{0.2cm}
+
+in
+
+\vspace{0.2cm}
+
+Computer Science 
+
+\vspace{0.2cm}
+
+by
+
+\vspace{0.55cm}
+
+\underline{\textcolor{white}{-------------------------------------------------------------}}\\
+
+\vspace{0.2cm}
+
+August 2020
+
+\end{center}
+
+\vspace{1.0cm}
+
+APPROVED:
+
+\vspace{0.3cm}
+
+\underline{\textcolor{white}{-------------------------------------------------------------}}
+
+\vspace{-0.2cm}
+
+\todo{Prof. Your advisor}, Dissertation Advisor
+
+\vspace{0.2cm}
+
+\underline{\textcolor{white}{-------------------------------------------------------------}}
+
+\vspace{-0.2cm}
+
+\todo{Dr. Person1}, Committee Member
+
+\vspace{0.2cm}
+
+\underline{\textcolor{white}{-------------------------------------------------------------}}
+
+\vspace{-0.2cm}
+
+\todo{Dr. Person2}, Committee Member
+
+\vspace{0.2cm}
+
+\underline{\textcolor{white}{-------------------------------------------------------------}}
+
+\vspace{-0.2cm}
+
+\todo{Dr. Person3}, External Committee Member
+
+% \AddToShipoutPicture*{\BackgroundPic}
+% \begin{center}
+% \vfill
+% {\large \scshape Worcester Polytechnic Institute}\\[1.4cm]
+% {\Large PhD Thesis Proposal}\\[0.5cm]
+% \rule{\textwidth}{1.5pt}\\[0cm]
+% {\huge \bfseries \thesistitle \par \ }\\[-0.5cm]
+% \rule{\textwidth}{1.5pt}\\[2.5cm]
+% \hfill  by\\[1cm]
+% \hfill  {\large \bfseries\name}\\
+% \vfill
+% {\hfill \large Supervisor: \textbf{\supervisor}} \\ 
+% \ifx\cosupervisor\undefined\else{\hfill \large Co-Supervisor: \textbf{\cosupervisor}} \\ \fi
+% \vspace{1cm}
+% \hfill  \submissiondate
+% \end{center}
+\end{titlepage}
+
+
+
+%----------------------------------------------------------------------------------------
+%	PREAMBLE PAGES (comment out unnecessary pages)
+%----------------------------------------------------------------------------------------
+
+\pagestyle{fancy} % Changes the headers
+\renewcommand{\chaptermark}[1]{ \markboth{#1}{}} % Getting the chapter name right
+\renewcommand{\sectionmark}[1]{\markright{\thesection\; #1}} % Getting the section name right
+\fancyhf{}% Clears header and footer
+%\fancyhead[RO,LE]{\thepage} % page number on the outside of headers
+
+\input{Preamble/abstract}
+
+%----------------------------------------------------------------------------------------
+%	LIST OF CONTENTS/FIGURES/TABLES
+%----------------------------------------------------------------------------------------
+
+%\renewcommand{\printtoctitle}[1]{\Huge\sffamily #1}
+\renewcommand*\contentsname{Table of Contents}
+\unnumberedchapter{Table of Contents}
+\tableofcontents % Write out the Table of Contents
+
+%----------------------------------------------------------------------------------------
+%	THESIS MAIN TEXT - CHAPTERS
+%----------------------------------------------------------------------------------------
+
+\addtocontents{toc}{\vspace{2em}} % Add a gap in the Contents, for aesthetics
+\mainmatter % Begin numeric (1,2,3...) page numbering
+
+
+% Import your chapters here
+\numberedchapter
+\input{MainText/chapter1.tex} 
+\input{MainText/chapter2.tex} 
+%----------------------------------------------------------------------------------------
+%	APPENDICES
+%----------------------------------------------------------------------------------------
+
+\addtocontents{toc}{\vspace{2em}} % Add a gap in the Contents, for aesthetics
+\appendix % Starts of appendices
+
+\numberedchapter
+%\input{MainText/appendixA}
+%\input{MainText/appendixB}
+%\input{MainText/appendixC}
+
+%----------------------------------------------------------------------------------------
+%	BIBLIOGRAPHY
+%----------------------------------------------------------------------------------------
+
+\addtocontents{toc}{\vspace{2em}} % Add a gap in the Contents, for aesthetics
+\unnumberedchapter{Bibliography} % Title of the unnumbered chapter
+\bibliography{Preamble/Thesis_bibliography} % The references information are stored in the file named "Thesis_bibliography.bib"
+
+
+\end{document}  
