@@ -1,11 +1,11 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 
 setup(
   name='awstools',
   version='0.0.1',
   author='Samuel S. Ogden',
   author_email='Samuel.S.Ogden@gmail.com',
-  packages=['awstools'],
+  packages=find_packages(exclude="tests"),
   #scripts=['bin/script1','bin/script2'],
   #url='http://pypi.python.org/pypi/PackageName/',
   #license='LICENSE.txt',
