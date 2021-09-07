@@ -29,19 +29,18 @@ data_stream.seek(0)
 interpreter = tflite.Interpreter(model_content=data_stream.getvalue(), num_threads=6)
 interpreter.allocate_tensors()
 
-times_used = 0
-
+was_cold = True
 
 def add_metadata(func):
   
   @functools.wraps(func)
   def wrapper(*args, **kwargs):
-    global times_used
+    global was_cold
     ts = time.time()
     response = func(*args, **kwargs)
     response["execution_time_ms"] = 1000*(time.time() - ts)
-    response["times_used"] = times_used
-    times_used += 1
+    response["was_cold"] = was_cold
+    was_cold = False
     return response
   return wrapper
   

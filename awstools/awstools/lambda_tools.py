@@ -3,7 +3,6 @@
 import logging
 logging.basicConfig()
 log = logging.getLogger(__name__)
-log.setLevel(logging.DEBUG)
 
 import time
 import base64
@@ -12,6 +11,7 @@ import zipfile
 import os
 import pathlib
 import tempfile
+import json
 
 import boto3
 
@@ -31,15 +31,25 @@ def invoke_function(function_name, *args, **kwargs):
   ts = time.time()
   response = client.invoke(
     FunctionName=function_name,
-    LogType="Tail" # includes log in response
+    LogType="Tail", # includes log in response
+    Payload=b'' if "payload" not in kwargs else kwargs["payload"],
   )
   te = time.time()
-  log.debug(base64.b64decode(response["LogResult"]).decode('utf-8'))
-  parsed_log = logs.parse_log_event(base64.b64decode(response["LogResult"]).decode('utf-8'))
   
-  return (te - ts), parsed_log
+  payload = response["Payload"].read().decode('utf-8')
+  log = base64.b64decode(response["LogResult"]).decode('utf-8')
+  
+  #log.debug(response["Payload"].read().decode('utf-8'))
+  return {
+    'response' : payload,
+    'parsed_response' : json.loads(payload),
+    'log' : log,
+    'parsed_log' : logs.parse_log_event(log),
+    'measured_latency' : (te - ts)
+  }
 
 def create_function(function_name, handler_str=None, *args, **kwargs):
+  log.info(f"Creating function {function_name}")
   if "client" in kwargs:
     client = kwargs["client"]
   else:
@@ -53,18 +63,14 @@ def create_function(function_name, handler_str=None, *args, **kwargs):
   with zipfile.ZipFile(zip_base, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
     info = zipfile.ZipInfo("lambda_function.py")
     info.external_attr = 0o777 << 16 # give full access to included file
-
-    if handler_str is None:
-      zip_file.write("tests/simple_handler.py")
-    else:
-      temp = tempfile.NamedTemporaryFile(mode='w', delete=False)
-      temp.write(handler_str)
-      temp.flush()
-      os.chmod(temp.name, 0o777)
-      zip_file.write(temp.name, "lambda_function.py")
     
-    #zipdir("package", zip_file)
-    zip_file.extractall("./extract_dir")
+    # Write out handler to a file so we can get the permissions right
+    temp = tempfile.NamedTemporaryFile(mode='w', delete=False)
+    temp.write(handler_str)
+    temp.flush()
+    os.chmod(temp.name, 0o777)
+    zip_file.write(temp.name, "lambda_function.py")
+      
   zip_base.seek(0)
       
   response = client.create_function(
@@ -79,9 +85,24 @@ def create_function(function_name, handler_str=None, *args, **kwargs):
   )
   
   log.debug(response)
+  log.info(f"Created as {function_name}")
   return function_name
+
+def get_function_memory(function_name, *args, **kwargs):
+  log.info(f"Getting memory: {function_name}")
+  if "client" in kwargs:
+    client = kwargs["client"]
+  else:
+    client = get_client()
+  
+  response = client.get_function_configuration(
+    FunctionName=function_name,  
+  )
+  
+  return response["MemorySize"]
   
 def update_function_memory(function_name, new_memory, *args, **kwargs):
+  log.info(f"Updating memory: {function_name} -> {new_memory}")
   if "client" in kwargs:
     client = kwargs["client"]
   else:
@@ -92,7 +113,15 @@ def update_function_memory(function_name, new_memory, *args, **kwargs):
     MemorySize=new_memory  
   )
 
+def delete_function(function_name, *args, **kwargs):
+  if "client" in kwargs:
+    client = kwargs["client"]
+  else:
+    client = get_client()
+  client.delete_function(
+    FunctionName=function_name,
+  )
 
 
 if __name__ == '__main__':
-  pass
+  log.setLevel(logging.DEBUG)
