@@ -16,6 +16,7 @@ import boto3
 
 #from . import logs
 import logs
+import s3_tools
 
 def get_client():
   return boto3.client('lambda')
@@ -32,46 +33,34 @@ def invoke_function(lambda_client, function_name):
   
   return (te - ts), parsed_log
 
-def create_function(handler_str=None):
+def create_function(handler_str=None, *args, **kwargs):
   client = get_client()
   
+  # Base for serving deep learning models, which this is mostly used for
+  zip_base = s3_tools.get_file_obj("layercake.config", "python38_tflite.zip")
   
-  zip_buffer = io.BytesIO()
-  with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
-    #for file_name, data in [('1.txt', io.BytesIO(b'111')), ('2.txt', io.BytesIO(b'222'))]:
-    #  zip_file.writestr(file_name, data.getvalue())
+  with zipfile.ZipFile(zip_base, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
     if handler_str is None:
       zip_file.write("tests/simple_handler.py")
     else:
       zip_file.writestr("lambda_function.py", handler_str)
     
-    zipdir("package", zip_file)
+    #zipdir("package", zip_file)
     zip_file.extractall("./extract_dir")
-  zip_buffer.seek(0)
+  zip_base.seek(0)
       
   response = client.create_function(
     FunctionName=f"function-{int(time.time())}",
     Role="arn:aws:iam::253976646984:role/vgg19-threadtest-9-10240-dev-us-east-1-lambdaRole",
-    Code={'ZipFile' : zip_buffer.read()},
+    Code={'ZipFile' : zip_base.read()},
     Runtime="python3.8",
     Handler="lambda_function.predict",
+    Timeout=60 if "timeout" not in kwargs else kwargs["timeout"],
+    MemorySize=10240 if "memory_size" not in kwargs else kwargs["memory_size"],
   )
   
   log.debug(response)
 
-## Utility Functions ##
-
-def zipdir(path, ziph):
-  # ziph is zipfile handle
-  for root, dirs, files in os.walk(path):
-    p = pathlib.Path(root)
-    #for file in files:
-    #  log.debug(f"file: {os.path.join(pathlib.Path(*p.parts[1:]), file)}")
-    for file in files:
-      ziph.write(os.path.join(root, file), 
-                 os.path.join(pathlib.Path(*p.parts[1:]), file))
-                                     
-#######################
 
 
 
