@@ -87,9 +87,11 @@ class LambdaModel(object):
     #costs[min_memory] = _round_of_measurement(min_memory, num_measurements)
     #costs[max_memory] = _round_of_measurement(max_memory, num_measurements)
     
-    prev_size = min_memory
+    prev_size = max_memory
     prev_measurement = self._round_of_measurement(prev_size, num_measurements)
-    going_up = True
+    log.debug(f"{self.model_name} : {prev_size} -> {np.mean(prev_measurement)}")
+    costs[prev_size] = prev_measurement
+    going_up = False
     while step_size > 1:
       curr_size = (prev_size + step_size) if going_up else (prev_size - step_size)
       curr_measurements = self._round_of_measurement(curr_size, num_measurements)
