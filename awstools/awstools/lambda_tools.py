@@ -37,46 +37,31 @@ def invoke_function(function_name, *args, **kwargs):
   te = time.time()
   
   payload = response["Payload"].read().decode('utf-8')
-  log = base64.b64decode(response["LogResult"]).decode('utf-8')
+  log_info = base64.b64decode(response["LogResult"]).decode('utf-8')
   
   #log.debug(response["Payload"].read().decode('utf-8'))
   return {
     'response' : payload,
     'parsed_response' : json.loads(payload),
-    'log' : log,
-    'parsed_log' : logs.parse_log_event(log),
+    'log' : log_info,
+    'parsed_log' : logs.parse_log_event(log_info),
     'measured_latency' : (te - ts)
   }
 
-def create_function(function_name, handler_str=None, *args, **kwargs):
-  log.info(f"Creating function {function_name}")
+
+def create_function(function_name_base, deployment_package_obj, *args, **kwargs):
+  log.info(f"Creating function {function_name_base}")
   if "client" in kwargs:
     client = kwargs["client"]
   else:
     client = get_client()
   
-  function_name = f"{function_name}-{int(time.time())}"
-  
-  # Base for serving deep learning models, which this is mostly used for
-  zip_base = s3_tools.get_file_obj("layercake.config", "python38_tflite.zip")
-  
-  with zipfile.ZipFile(zip_base, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
-    info = zipfile.ZipInfo("lambda_function.py")
-    info.external_attr = 0o777 << 16 # give full access to included file
-    
-    # Write out handler to a file so we can get the permissions right
-    temp = tempfile.NamedTemporaryFile(mode='w', delete=False)
-    temp.write(handler_str)
-    temp.flush()
-    os.chmod(temp.name, 0o777)
-    zip_file.write(temp.name, "lambda_function.py")
-      
-  zip_base.seek(0)
+  function_name = f"{function_name_base}-{int(time.time())}"
       
   response = client.create_function(
     FunctionName=f"{function_name}",
     Role="arn:aws:iam::253976646984:role/vgg19-threadtest-9-10240-dev-us-east-1-lambdaRole",
-    Code={'ZipFile' : zip_base.read()},
+    Code={'ZipFile' : deployment_package_obj.read()},
     Runtime="python3.8",
     Handler="lambda_function.predict",
     Timeout=60 if "timeout" not in kwargs else kwargs["timeout"],
@@ -87,6 +72,27 @@ def create_function(function_name, handler_str=None, *args, **kwargs):
   log.debug(response)
   log.info(f"Created as {function_name}")
   return function_name
+
+
+def create_function_inference(function_name_base, handler_str=None, *args, **kwargs):
+  
+  # Base for serving deep learning models, which this is mostly used for
+  zip_base_obj = s3_tools.get_file_obj("layercake.config", "python38_tflite.zip")
+  
+  with zipfile.ZipFile(zip_base_obj, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
+    info = zipfile.ZipInfo("lambda_function.py")
+    info.external_attr = 0o777 << 16 # give full access to included file
+    
+    # Write out handler to a file so we can get the permissions right
+    temp = tempfile.NamedTemporaryFile(mode='w', delete=False)
+    temp.write(handler_str)
+    temp.flush()
+    os.chmod(temp.name, 0o777)
+    zip_file.write(temp.name, "lambda_function.py")
+      
+  zip_base_obj.seek(0)
+  
+  return create_function(function_name_base, zip_base_obj, *args, **kwargs)
 
 def get_function_memory(function_name, *args, **kwargs):
   log.info(f"Getting memory: {function_name}")
