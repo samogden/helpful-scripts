@@ -9,19 +9,15 @@ import collections
 import pprint
 
 import pandas as pd
-import numpy as np
 
-import lambda_tools
+from . import lambda_tools
 
 LAMBDA_COST_MODIFIER = 1.0
 
 def deploy_model(model_name, memory_size=1024, *args, **kwargs):
-  with open("templates/lambda_interpreter.py") as fid:
-    handler_str = fid.read()
   function_name = lambda_tools.create_function_inference(
-    function_name_base=f"{model_name}",
+    #function_name=None if "function_name" not in kwargs else kwargs["function_name"],
     model_name=model_name,
-    handler_str=handler_str,
     MemorySize=memory_size,
     env={"MODEL_NAME" : model_name},
     *args, **kwargs
@@ -34,7 +30,7 @@ class LambdaModel(object):
   def __init__(self, model_name, *args, **kwargs):
     self.lambda_client = lambda_tools.get_client()
     self.model_name = model_name
-    self.function_name = deploy_model(model_name, client=self.lambda_client)
+    self.function_name = deploy_model(model_name, client=self.lambda_client, *args, **kwargs)
   
   def take_measurement(self, burned_requests=3):
     for _ in range(burned_requests):
@@ -84,12 +80,13 @@ class LambdaModel(object):
   def find_minimum_cost_convex(self, min_memory=128, max_memory=10240, num_measurements=100):
     step_size = int((max_memory - min_memory) / 2)
     costs = collections.defaultdict(list)
-    #costs[min_memory] = _round_of_measurement(min_memory, num_measurements)
-    #costs[max_memory] = _round_of_measurement(max_memory, num_measurements)
+    
+    def mean(measurements):
+      return (sum(measurements) / len(measurements))
     
     prev_size = max_memory
     prev_measurement = self._round_of_measurement(prev_size, num_measurements)
-    log.debug(f"{self.model_name} : {prev_size} -> {np.mean(prev_measurement)}")
+    log.debug(f"{self.model_name} : {prev_size} -> {mean(prev_measurement)}")
     costs[prev_size] = prev_measurement
     going_up = False
     while step_size > 1:
@@ -97,9 +94,11 @@ class LambdaModel(object):
       curr_measurements = self._round_of_measurement(curr_size, num_measurements)
       costs[curr_size] = curr_measurements
       
-      log.debug(f"{self.model_name} : {curr_size} -> {np.mean(curr_measurements)}")
+      log.debug(f"{self.model_name} : {curr_size} -> {mean(curr_measurements)}")
       # Compare the previous cost against this cost
-      if np.mean(prev_measurement) > np.mean(curr_measurements):
+      if mean(curr_measurements) == float('inf'):
+        going_up = True
+      elif mean(prev_measurement) > mean(curr_measurements):
         # If this cost is lower, then we should keep going in the same direction
         going_up = going_up
       else:
@@ -117,11 +116,11 @@ class LambdaModel(object):
 
 if __name__ == '__main__':
   models = [
-    "efficientnetb0",
+    #"efficientnetb0",
     "efficientnetb7",
-    "nasnetmobile",
-    "resnet152v2",
-    "vgg19"
+    #"nasnetmobile",
+    #"resnet152v2",
+    #"vgg19"
   ]
   cost_points = {}
   for model_name in models:

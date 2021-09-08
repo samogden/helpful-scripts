@@ -16,11 +16,34 @@ import json
 import boto3
 
 #from . import logs
-import logs
-import s3_tools
+from . import logs
+from . import s3_tools
 
 def get_client():
   return boto3.client('lambda')
+
+def create_function(function_name, deployment_package_obj, *args, **kwargs):
+  log.info(f"Creating function {function_name}")
+  if "client" in kwargs:
+    client = kwargs["client"]
+  else:
+    client = get_client()
+      
+  response = client.create_function(
+    FunctionName=f"{function_name}",
+    Role="arn:aws:iam::253976646984:role/vgg19-threadtest-9-10240-dev-us-east-1-lambdaRole",
+    Code={'ZipFile' : deployment_package_obj.read()},
+    Runtime="python3.8",
+    Handler="lambda_function.predict",
+    Timeout=10 if "timeout" not in kwargs else kwargs["timeout"],
+    MemorySize=10240 if "memory_size" not in kwargs else kwargs["memory_size"],
+    Environment={} if "env" not in kwargs else {'Variables' : kwargs["env"]}
+  )
+  
+  log.debug(response)
+  log.info(f"Created as {function_name}")
+  return function_name
+
 
 def invoke_function(function_name, *args, **kwargs):
   if "client" in kwargs:
@@ -49,50 +72,32 @@ def invoke_function(function_name, *args, **kwargs):
   }
 
 
-def create_function(function_name_base, deployment_package_obj, *args, **kwargs):
-  log.info(f"Creating function {function_name_base}")
-  if "client" in kwargs:
-    client = kwargs["client"]
+def create_function_inference(*args, **kwargs):
+  
+  if "function_name" in kwargs and kwargs["function_name"] is not None:
+    function_name = kwargs["function_name"]
+  elif "model_name" in kwargs and kwargs["model_name"] is not None:
+    function_name = f"{kwargs['model_name']}-{time.time()}"
   else:
-    client = get_client()
-  
-  function_name = f"{function_name_base}-{int(time.time())}"
-      
-  response = client.create_function(
-    FunctionName=f"{function_name}",
-    Role="arn:aws:iam::253976646984:role/vgg19-threadtest-9-10240-dev-us-east-1-lambdaRole",
-    Code={'ZipFile' : deployment_package_obj.read()},
-    Runtime="python3.8",
-    Handler="lambda_function.predict",
-    Timeout=60 if "timeout" not in kwargs else kwargs["timeout"],
-    MemorySize=10240 if "memory_size" not in kwargs else kwargs["memory_size"],
-    Environment={} if "env" not in kwargs else {'Variables' : kwargs["env"]}
-  )
-  
-  log.debug(response)
-  log.info(f"Created as {function_name}")
-  return function_name
-
-
-def create_function_inference(function_name_base, handler_str=None, *args, **kwargs):
+    function_name = f"function-{time.time()}"
+  del kwargs["function_name"]
   
   # Base for serving deep learning models, which this is mostly used for
   zip_base_obj = s3_tools.get_file_obj("layercake.config", "python38_tflite.zip")
+  interpreter_script_obj = s3_tools.get_file_obj("layercake.config", "lambda_interpreter.py")
   
   with zipfile.ZipFile(zip_base_obj, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
-    info = zipfile.ZipInfo("lambda_function.py")
-    info.external_attr = 0o777 << 16 # give full access to included file
     
     # Write out handler to a file so we can get the permissions right
     temp = tempfile.NamedTemporaryFile(mode='w', delete=False)
-    temp.write(handler_str)
+    temp.write(interpreter_script_obj.read().decode('UTF-8'))
     temp.flush()
     os.chmod(temp.name, 0o777)
     zip_file.write(temp.name, "lambda_function.py")
       
   zip_base_obj.seek(0)
   
-  return create_function(function_name_base, zip_base_obj, *args, **kwargs)
+  return create_function(function_name, zip_base_obj, *args, **kwargs)
 
 def get_function_memory(function_name, *args, **kwargs):
   log.info(f"Getting memory: {function_name}")
