@@ -15,7 +15,11 @@ from . import lambda_tools
 LAMBDA_COST_MODIFIER = 1.0
 
 def deploy_model(model_name, memory_size=1024, *args, **kwargs):
-  function_name = lambda_tools.create_function_inference(
+  if "reuse" in kwargs and kwargs["reuse"]:
+    lambda_function = lambda_tools.get_function_inference
+  else:
+    lambda_function = lambda_tools.create_function_inference
+  function_name = lambda_function(
     #function_name=None if "function_name" not in kwargs else kwargs["function_name"],
     model_name=model_name,
     MemorySize=memory_size,
@@ -30,12 +34,15 @@ class LambdaModel(object):
   def __init__(self, model_name, *args, **kwargs):
     self.lambda_client = lambda_tools.get_client()
     self.model_name = model_name
-    self.function_name = deploy_model(model_name, client=self.lambda_client, *args, **kwargs)
+    self.function_name = deploy_model(model_name, client=self.lambda_client, reuse=True, *args, **kwargs)
+    self.lambda_client.get_waiter('function_active').wait(FunctionName=self.function_name)
   
   def take_measurement(self, burned_requests=3):
     for _ in range(burned_requests):
       lambda_tools.invoke_function(self.function_name, client=self.lambda_client)
     response_dict = lambda_tools.invoke_function(self.function_name, client=self.lambda_client)
+    log.debug(list(response_dict.keys()))
+    log.debug(list(response_dict["parsed_response"].keys()))
     if "errorMessage" in response_dict["parsed_response"]:
       return {
         'client_latency' : response_dict["measured_latency"],
@@ -50,6 +57,7 @@ class LambdaModel(object):
       'billed_latency' : response_dict["parsed_log"]["Billed Duration"],
       'memory_size' : response_dict["parsed_log"]["Memory Size"],
       'memory_used' : response_dict["parsed_log"]["Max Memory Used"],
+      'fqdn'  : response_dict["parsed_response"]["fqdn"]
     }
       
   def change_memory(self, new_memory):
@@ -122,17 +130,17 @@ if __name__ == '__main__':
     #"resnet152v2",
     #"vgg19"
   ]
-  cost_points = {}
-  for model_name in models:
-    try:
-      model = LambdaModel(model_name)
-      minimum_cost_memory = model.find_minimum_cost_convex()
-      cost_points[model.model_name] = minimum_cost_memory
-      print(f"{model.model_name} : {model.minimum_cost_memory}")
-    finally:
-      model.cleanup()
-  
-  for model, memory in cost_points.items():
-    print(f"{model} : {memory}")
+  #cost_points = {}
+  #for model_name in models:
+  #  try:
+  #    model = LambdaModel(model_name)
+  #    minimum_cost_memory = model.find_minimum_cost_convex()
+  #    cost_points[model.model_name] = minimum_cost_memory
+  #    print(f"{model.model_name} : {model.minimum_cost_memory}")
+  #  finally:
+  #    model.cleanup()
+  #
+  #for model, memory in cost_points.items():
+  #  print(f"{model} : {memory}")
   
   
