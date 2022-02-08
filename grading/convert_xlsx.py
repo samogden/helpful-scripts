@@ -118,7 +118,6 @@ def load_excel_to_students_dict(
     default_answer_func):
   """Takes an xlsx file and returns a dictionary of student objects with keys of student name"""
   file_extension = os.path.splitext(path_to_excel)[1]
-  print(f"file_extension: {file_extension}")
   if file_extension == '.xlsx':
     df = pd.read_excel(path_to_excel, engine='openpyxl')
   elif file_extension == '.xls':
@@ -126,7 +125,6 @@ def load_excel_to_students_dict(
   elif file_extension == '.csv':
       df = pd.read_csv(path_to_excel)
   
-  print(df.head())
   # Combines alternating columns and assumes they're (score, comment) pairs
   question_comment_column_header_pairs = list(zip(df.columns[2::2], df.columns[3::2]))
 
