@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+#! env python
 """IA Grading assistant -- converts from XLSX and HTML to HTML and comments
 
 Adapted from script by Shuwen Liu
@@ -14,6 +14,10 @@ import zipfile
 import numpy as np
 import pandas as pd
 import bs4
+
+
+class AssignmentNumberException(Exception):
+  pass
 
 
 def get_default_score_func(override_default_scores=None):
@@ -57,7 +61,6 @@ class Student(object):
     self.username = username
     self.scores = scores
     self.comments = comments
-    self.html_identifier = -1
 
   @staticmethod
   def fix_name(name):
@@ -85,9 +88,28 @@ class Student(object):
 
   def get_score(self):
     return np.sum(self.scores)
-
-class AssignmentNumberException(Exception):
-  pass
+  
+  def is_empty(self):
+    return self.get_score() == 0
+  
+  def missing_question(self):
+    return min(self.scores) == 0
+  
+  def has_potential_errors(self):
+    
+    if self.is_empty():
+      # If there is no grade for the student
+      #  Note: this is a subset of the following
+      return True
+      
+    if self.missing_question():
+      # If the student has one more more 0s
+      return True
+    
+    
+    
+    return False
+  
 
 def load_excel_to_students_dict(
     path_to_excel,
@@ -210,19 +232,24 @@ def main():
       print(f"  Missing entry in html for {student}")
 
   if len(missing_from_xlsx) > 0:
-    print("!! Missing Students from HTML !!")
+    print("!! Missing Students from XLSX !!")
     for student in missing_from_xlsx:
-      print(f"  Missing entry in html for {student}")
+      print(f"  Missing entry in xlsx for {student}")
 
   print("")
 
-  students_with_zero = list(filter((lambda s: s.get_score() == 0.), students_dict.values()))
-  if len(students_with_zero) > 0:
-    print("!! Students with score of 0!!")
-    for student in students_with_zero:
-      print(f"  Score of 0 record for student {student.student_name}")
+  students_with_potential_issues = list(filter((lambda s: s.has_potential_errors()), students_dict.values()))
+  if len(students_with_potential_issues) > 0:
+    print("!! Students with potential issues!!")
+    print("  Missing Question:")
+    for student in filter( (lambda s: s.missing_question() and not s.is_empty()), students_with_potential_issues):
+      print(f"    Student: {student}")
+    print("")
+    print("  Empty Score:")
+    for student in filter( (lambda s: not(s.missing_question() and not s.is_empty())), students_with_potential_issues):
+      print(f"    Student: {student}")
   else:
-    print("All students have non-zero score")
+    print("All students have no issues")
 
   return
 
