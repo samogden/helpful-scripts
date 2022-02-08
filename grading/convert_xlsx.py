@@ -10,6 +10,7 @@ import os
 import argparse
 import shutil
 import zipfile
+import json
 
 import numpy as np
 import pandas as pd
@@ -116,8 +117,16 @@ def load_excel_to_students_dict(
     default_score_func,
     default_answer_func):
   """Takes an xlsx file and returns a dictionary of student objects with keys of student name"""
-  df = pd.read_excel(path_to_excel)
-
+  file_extension = os.path.splitext(path_to_excel)[1]
+  print(f"file_extension: {file_extension}")
+  if file_extension == '.xlsx':
+    df = pd.read_excel(path_to_excel, engine='openpyxl')
+  elif file_extension == '.xls':
+      df = pd.read_excel(path_to_excel)
+  elif file_extension == '.csv':
+      df = pd.read_csv(path_to_excel)
+  
+  print(df.head())
   # Combines alternating columns and assumes they're (score, comment) pairs
   question_comment_column_header_pairs = list(zip(df.columns[2::2], df.columns[3::2]))
 
@@ -184,8 +193,9 @@ def parse_args():
   parser.add_argument("--overwrite_existing", action="store_true")
 
   parser.add_argument("--grades_excel", required=True)
-  parser.add_argument("--base_html", default="")
-
+  parser.add_argument("--base_html", required=True)
+  parser.add_argument("--default_answers_json")
+  
   parser.add_argument("--assignment_number", default=None)
   parser.add_argument("--suppress_assignment_number", action="store_true")
 
@@ -203,8 +213,21 @@ def main():
       exit(0)
     shutil.rmtree(output_dir)
   os.mkdir(output_dir)
-
-  students_dict = load_excel_to_students_dict(args.grades_excel, default_score_func=get_default_score_func(), default_answer_func=get_default_answers_func())
+  
+  if args.default_answers_json is not None:
+    with open(args.default_answers_json) as json_fid:
+      default_answers_dict = json.load(json_fid)
+    default_answers = [d["default_answer"] for d in default_answers_dict]
+    default_scores = [d["default_score"] for d in default_answers_dict]
+  else:
+    default_answers = None
+    default_scores = None
+  
+  students_dict = load_excel_to_students_dict(
+    args.grades_excel, 
+    default_score_func=get_default_score_func(default_scores), 
+    default_answer_func=get_default_answers_func(default_answers)
+  )
   try:
     new_html, missing_from_html, missing_from_xlsx = load_and_update_html(
       args.base_html,
