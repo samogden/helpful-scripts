@@ -127,13 +127,16 @@ def load_excel_to_students_dict(
 def load_and_update_html(path_to_html, students_dict, assignment_number, supress_assignment_number):
   """Loads HTML via beautiful soup and uses the student dict to update scores in place.  Returns string"""
   table_soup = bs4.BeautifulSoup(open(path_to_html).read(), features="html.parser")
-  found_assignment_number = table_soup.find_all("input")[0]["value"]
+  found_assignment = table_soup.find_all("input")[0]
+  found_assignment_number = found_assignment["value"]
   # Check to make sure we're doing the same assignment
   if not supress_assignment_number:
     print(f"assignment_number: {assignment_number}")
     print(f"found_assignment_number: {found_assignment_number}")
     if assignment_number != found_assignment_number:
       raise AssignmentNumberException(f"Incorrect assignment number found! {assignment_number} != {found_assignment_number}")
+  else:
+    found_assignment["value"] = assignment_number
 
   rows = table_soup.find_all("tr")
   html_students = []
