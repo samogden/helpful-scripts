@@ -61,7 +61,7 @@ class Student(object):
     self.student_name = self.__class__.fix_name(student_name)
     self.username = username
     self.grader= grader
-    self.scores = scores
+    self.scores = [float(f) for f in scores]
     self.comments = comments
 
   @staticmethod
@@ -96,7 +96,7 @@ class Student(object):
     return self.get_score() == 0
   
   def missing_question(self):
-    return min(self.scores) == 0
+    return min(self.scores) == 0 and (not self.scores[0] == 0 and len(self.scores) > 3)
   
   def has_potential_errors(self):
     
@@ -136,6 +136,8 @@ def load_excel_to_students_dict(
 
   students = {}
   for _, row in df.iterrows():
+    if pd.isna(row["Student Name"]):
+      continue
     scores = [
       row[q_header]
       for idx, (q_header, c_header) in enumerate(question_comment_column_header_pairs)
