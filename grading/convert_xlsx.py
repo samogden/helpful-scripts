@@ -57,9 +57,10 @@ def get_default_answers_func(override_default_answers=None):
 
 
 class Student(object):
-  def __init__(self, student_name, username, scores, comments):
+  def __init__(self, student_name, username, grader, scores, comments):
     self.student_name = self.__class__.fix_name(student_name)
     self.username = username
+    self.grader= grader
     self.scores = scores
     self.comments = comments
 
@@ -85,6 +86,7 @@ class Student(object):
       comment_str += f"  Q{idx + 1} : {score} points : {comment}\n"
     comment_str += "\n"
     comment_str += f"Total Score : {np.sum(self.scores)} = {' + '.join([str(s) for s in self.scores])}"
+    comment_str += f"\ngraded by: {self.grader}"
     return comment_str
 
   def get_score(self):
@@ -126,7 +128,7 @@ def load_excel_to_students_dict(
       df = pd.read_csv(path_to_excel)
   
   # Combines alternating columns and assumes they're (score, comment) pairs
-  question_comment_column_header_pairs = list(zip(df.columns[2::2], df.columns[3::2]))
+  question_comment_column_header_pairs = list(zip(df.columns[3::2], df.columns[4::2]))
 
   for idx, (q_header, c_header) in enumerate(question_comment_column_header_pairs):
     df[q_header] = df[q_header].fillna(default_score_func(idx))
@@ -145,6 +147,7 @@ def load_excel_to_students_dict(
     student = Student(
       row["Student Name"],
       row["User Name"],
+      row["Grader"],
       scores,
       comments
     )
