@@ -130,6 +130,7 @@ def load_excel_to_students_dict(
   # Combines alternating columns and assumes they're (score, comment) pairs
   question_comment_column_header_pairs = list(zip(df.columns[3::2], df.columns[4::2]))
 
+  df["Grader"] = df["Grader"].fillna("(This assignment seems to have not been graded.  Please reach out to ask why.)")
   for idx, (q_header, c_header) in enumerate(question_comment_column_header_pairs):
     df[q_header] = df[q_header].fillna(default_score_func(idx))
     df[c_header] = df[c_header].fillna(default_answer_func(idx))
