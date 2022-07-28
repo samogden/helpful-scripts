@@ -19,6 +19,8 @@ def getParser(add_help=True, include_parents=True):
   parser.add_argument('--path_to_bib', default='bib.bib', help='Path to bibliography file')
   parser.add_argument('--keys_to_ignore', default=[], nargs='+', help="keys to ignore (e.g. 'our-repo')")
   
+  parser.add_argument('--minimized_bib', default='min.bib')
+  
   return parser
 
 def main():
@@ -31,8 +33,10 @@ def main():
   files_to_check = glob.glob(f'{flags.tex_dir}/**/*.tex', recursive=True)
   files_to_check = list(filter( (lambda f: not any([ex in f for ex in flags.exclude_dir])), files_to_check))
   
+  all_citations = set([])
   for f in files_to_check:
     citations = getCitationsFromFile(f)
+    all_citations.update(citations)
     #if len(citations) > 0:
     #  logging.info(f"{f} : {citations}")
     for c in citations:
@@ -46,6 +50,15 @@ def main():
       continue
     print(f"{c}:\t{' '.join(f)}")
   print("")
+  
+  citation_texts = getCitationTextsFromBib(flags.path_to_bib)
+  with open(flags.minimized_bib, 'w') as fid:
+    for cite_key in sorted(all_citations):
+      try:
+        fid.write(citation_texts[cite_key])
+        fid.write("\n\n")
+      except KeyError:
+        continue
 
 def getCitationsFromFile(f):
   pattern = r'\\cite{([^}]*)}'
@@ -56,6 +69,7 @@ def getCitationsFromFile(f):
   if len(ls) == 0:
     return []
   citations = list(set([s.strip() for s in ','.join(list(ls)).split(',')]))
+  logging.debug(citations)
   return citations
 
 def getCitedFromBib(b):
@@ -64,9 +78,24 @@ def getCitedFromBib(b):
   with open(b) as fid:
     lines = fid.readlines()
   ls = re.findall(pattern, ''.join(lines))
-  logging.debug(ls)
+  #logging.debug(ls)
   return list(ls)
+
+def getCitationTextsFromBib(b):
+  pattern = re.compile(r'@.*{(.*),')
+  with open(b) as fid:
+    bib_text = ''.join(fid.readlines())
   
+  citations = {}
+  for citation in bib_text.split('\n\n'):
+    try:
+      citation_key = re.findall(pattern, ''.join(citation))[0]
+    except IndexError:
+      continue
+    logging.debug(f"key: {citation_key}")
+    logging.debug(citation)
+    citations[citation_key] = citation
+  return citations
   
 
 if __name__ == '__main__':
