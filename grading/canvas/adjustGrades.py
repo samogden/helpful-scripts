@@ -19,24 +19,25 @@ CSV_FILE = os.path.expanduser("~/classes/CST334 - OS/OS-Ogden-Fall22/exams/exam1
 RUBRIC_FILE = os.path.abspath("keys/cst334-fall2022-exam1.json")
 
 class RubricEntry(object):
-  def __init__(self, answer_id, rubric_values=dict()):
+  def __init__(self, answer_id, rubric_values, is_extra_credit):
     self.answer_id = answer_id
     self.rubric_values = { float(score) : possible_answers for score, possible_answers in rubric_values.items()}
+    self.is_extra_credit = is_extra_credit
   def __str__(self):
     return f"<{self.__class__.__name__}:{sorted(self.rubric_values.keys())}>"
   def grade(self, answer):
     for score in sorted(self.rubric_values.keys(), reverse=True):
-      #log.debug(f"Checking {answer} in {self.rubric_values[score]} ({answer in self.rubric_values[score]})")
-      if answer in self.rubric_values[score]:
+      log.debug(f"Checking {answer} in {self.rubric_values[score]} ({str(answer) in self.rubric_values[score]})")
+      if str(answer) in self.rubric_values[score]:
         return score
-    log.info(f"Answer \"{answer}\" not found in rubric")
+    log.info(f"Answer \"{answer}\" not found in rubric ({self.rubric_values.values()}")
     return 0.0
 
 class Rubric(object):
     
   def __init__(self, rubric_dict: dict):
     self.entries = {
-      key: RubricEntry(key, entry["rubric"])
+      key: RubricEntry(key, entry["rubric"], (entry["is_extra_credit"] if "is_extra_credit" in entry else False))
       for key, entry in rubric_dict.items()
     }
   def __str__(self):
@@ -60,6 +61,11 @@ class Question(object):
   @property
   def has_rubric(self):
     return self.rubric is not None
+  def get_contribution_to_total(self):
+    if self.has_rubric and self.rubric.is_extra_credit:
+      return 0
+    else:
+      return self.value
 
 class Response(object):
   def __init__(self, question, response, autograde_score):
@@ -73,6 +79,8 @@ class Response(object):
       calculated_score = self.question.value * self.question.rubric.grade(self.response)
       if calculated_score < self.autograde_score:
         log.warning(f"{calculated_score} < {self.autograde_score}")
+        log.debug(f"{self.question.question_col}")
+        log.info(f"{self.response}")
       return self.question.value * self.question.rubric.grade(self.response)
     return self.autograde_score
   def __str__(self):
@@ -94,7 +102,7 @@ class Student(object):
   def get_num_incorrect(self):
     return len(list(filter((lambda r: r.score == 0), self.responses.values())))
   def get_score(self):
-    return sum([q.score for q in self.responses.values()])
+    return sum([q.score for q in self.responses.values()]) / sum([q.question.get_contribution_to_total() for q in self.responses.values()])
   def addResponse(self, response):
     self.responses[response.question.question_id] = response
   def to_list(self, skip_questions=True):
