@@ -73,14 +73,15 @@ def parse_evals(evals: list[Evaluation]):
         total_score += review.rating
         num_peer_reviews += 1
     try:
+      score = convert_to_points(total_score / num_peer_reviews)
       if has_self:
-        log.debug(f"{name} -> {convert_to_points(total_score / num_peer_reviews):0.2f}" )
+        log.debug(f"{name} -> {score:0.2f}" )
       else:
-        log.debug(f"**{name} -> {convert_to_points(total_score / num_peer_reviews):0.2f}" )
+        log.debug(f"**{name} -> {score / 2.0:0.2f}" )
     except ZeroDivisionError:
       log.warning(f"No peer reviews for {name}")
 
-def convert_to_points(score, max_points=30.0):
+def convert_to_points(score, max_points=50.0):
   if score >= 3:
     return max_points
   if score <= 1:
@@ -95,8 +96,6 @@ def main():
     log.debug("")
     log.debug(f"Assignment: {assignment}")
     parse_evals(eval)
-
-
 
 
 if __name__ == "__main__":
