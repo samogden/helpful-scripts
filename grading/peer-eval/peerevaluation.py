@@ -81,12 +81,12 @@ def parse_evals(evals: list[Evaluation]):
     except ZeroDivisionError:
       log.warning(f"No peer reviews for {name}")
 
-def convert_to_points(score, max_points=50.0):
+def convert_to_points(score, max_points=30.0):
   if score >= 3:
     return max_points
   if score <= 1:
     return 0.0
-  return (score - 1.0) / 3 * max_points
+  return (score) / 3 * max_points
 
 def main():
   
