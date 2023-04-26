@@ -102,7 +102,7 @@ def main():
   for assignment, eval in assignment_evals.items():
     log.debug("")
     log.debug(f"Assignment: {assignment}")
-    parse_evals(eval, args.max_points)
+    parse_evals(eval, flags.max_points)
 
 
 if __name__ == "__main__":
