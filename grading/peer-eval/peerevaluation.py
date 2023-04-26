@@ -1,4 +1,5 @@
 #!env python
+import argparse
 import json
 import os.path
 from collections import defaultdict
@@ -9,9 +10,6 @@ import logging
 logging.basicConfig()
 log = logging.getLogger("PeerEval")
 log.setLevel(logging.DEBUG)
-
-INPUT_CSV = os.path.expanduser("~/Downloads/Peer Evaluation Form (Responses) - Form Responses 1.csv")
-
 
 class Evaluation(object):
   def __init__(self, name, rating, explanation, self_eval_bool=False):
@@ -58,7 +56,7 @@ def parse_csv(csv_file):
       i += 1
   return assignment_evals
 
-def parse_evals(evals: list[Evaluation]):
+def parse_evals(evals: list[Evaluation], max_points):
   per_student_evals = defaultdict(list)
   for eval in evals:
     per_student_evals[eval.name].append(eval)
@@ -73,7 +71,7 @@ def parse_evals(evals: list[Evaluation]):
         total_score += review.rating
         num_peer_reviews += 1
     try:
-      score = convert_to_points(total_score / num_peer_reviews)
+      score = convert_to_points(total_score / num_peer_reviews, max_points)
       if has_self:
         log.debug(f"{name} -> {score:0.2f}" )
       else:
@@ -81,21 +79,30 @@ def parse_evals(evals: list[Evaluation]):
     except ZeroDivisionError:
       log.warning(f"No peer reviews for {name}")
 
-def convert_to_points(score, max_points=30.0):
+def convert_to_points(score, max_points):
   if score >= 3:
     return max_points
   if score <= 1:
     return 0.0
   return (score) / 3 * max_points
 
+def get_flags():
+  parser = argparse.ArgumentParser()
+  parser.add_argument("--input_csv", required=True)
+  parser.add_argument("--max_points", required=True)
+  
+  return parser.parse_args()
+
 def main():
   
-  assignment_evals = parse_csv(INPUT_CSV)
+  flags = get_flags()
+  
+  assignment_evals = parse_csv(os.path.expanduser(flags.input_csv))
   #log.debug(assignment_evals.values())
   for assignment, eval in assignment_evals.items():
     log.debug("")
     log.debug(f"Assignment: {assignment}")
-    parse_evals(eval)
+    parse_evals(eval, args.max_points)
 
 
 if __name__ == "__main__":
