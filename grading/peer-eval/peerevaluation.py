@@ -2,6 +2,7 @@
 import argparse
 import json
 import os.path
+import re
 from collections import defaultdict
 
 import pandas as pd
@@ -14,7 +15,7 @@ log.setLevel(logging.DEBUG)
 class Evaluation(object):
   def __init__(self, name, rating, explanation, self_eval_bool=False):
     self.self_eval = self_eval_bool
-    self.name = fix_names(name.strip().title())
+    self.name = fix_names(re.sub(' +', ' ', name).strip().title())
     self.rating = rating
     self.explanation = explanation
 
@@ -73,7 +74,7 @@ def parse_evals(evals: list[Evaluation], max_points):
     try:
       score = convert_to_points(total_score / num_peer_reviews, max_points)
       if has_self:
-        log.debug(f"{name} -> {score:0.2f}" )
+        print(f"{name} -> {score:0.2f}" )
       else:
         log.debug(f"**{name} -> {score / 2.0:0.2f}" )
     except ZeroDivisionError:
@@ -89,7 +90,7 @@ def convert_to_points(score, max_points):
 def get_flags():
   parser = argparse.ArgumentParser()
   parser.add_argument("--input_csv", required=True)
-  parser.add_argument("--max_points", required=True)
+  parser.add_argument("--max_points", required=True, type=int)
   
   return parser.parse_args()
 
