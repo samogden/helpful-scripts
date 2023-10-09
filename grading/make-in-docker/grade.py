@@ -25,7 +25,8 @@ def parse_flags():
   parser.add_argument("--path_to_files", default="/Users/ssogden/scratch/csT334/submissions")
   parser.add_argument("--assignment_name", default="PA1 - Intro to C and Processes (code)")
   parser.add_argument("--num_repeats", default=3)
-  parser.add_argument("--tag", default=["main"], action="append")
+  parser.add_argument("--tag", default=["main"], action="append", dest="tags")
+  parser.add_argument("--assignment", default="PA1")
   return parser.parse_args()
 
 def parse_csv(path_to_csv):
@@ -67,7 +68,7 @@ def build_docker_image():
   logging.debug(logs)
   return image
 
-def run_docker_with_archive(image, student_files_dir, tag_to_test):
+def run_docker_with_archive(image, student_files_dir, tag_to_test, programming_assignment):
 
   tarstream = io.BytesIO()
   with tarfile.open(fileobj=tarstream, mode="w") as tarhandle:
@@ -80,18 +81,18 @@ def run_docker_with_archive(image, student_files_dir, tag_to_test):
     detach=True,
     tty=True
   )
-  container.put_archive("/tmp/grading/programming-assignments/PA1/src", tarstream)
+  container.put_archive(f"/tmp/grading/programming-assignments/{programming_assignment}/src", tarstream)
   
-  exit_code, output = container.exec_run("ls -l /tmp/grading/programming-assignments/PA1/")
+  exit_code, output = container.exec_run(f"ls -l /tmp/grading/programming-assignments/{programming_assignment}/")
   logging.debug(output.decode())
-  exit_code, output = container.exec_run("tree /tmp/grading/programming-assignments/PA1/")
+  exit_code, output = container.exec_run(f"tree /tmp/grading/programming-assignments/{programming_assignment}/")
   logging.debug(output.decode())
   
   
   run_str = f"""
     bash -c '
       git checkout {tag_to_test} || echo "" > /dev/null;
-      cd /tmp/grading/programming-assignments/PA1 ;
+      cd /tmp/grading/programming-assignments/{programming_assignment} ;
       timeout 30   python ../../helpers/grader.py --output /tmp/results.json ;
     '
     """
@@ -187,7 +188,7 @@ def main():
       worst_results = {"score" : float('inf')}
       for i in range(args.num_repeats):
         logging.info(f"i: {i}")
-        results = run_docker_with_archive(image, os.path.abspath("./student_code"), tag_to_test)
+        results = run_docker_with_archive(image, os.path.abspath("./student_code"), tag_to_test, args.assignment)
         logging.info(f"score: {results['score']}")
         if results["score"] < worst_results["score"]:
           worst_results = results
