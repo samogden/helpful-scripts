@@ -24,6 +24,8 @@ def parse_flags():
   parser.add_argument("--csv_in", default="/Users/ssogden/scratch/csT334/2023-09-29T2137_Grades-CST334-M_01-02_FA23.csv")
   parser.add_argument("--path_to_files", default="/Users/ssogden/scratch/csT334/submissions")
   parser.add_argument("--assignment_name", default="PA1 - Intro to C and Processes (code)")
+  parser.add_argument("--num_repeats", default=3)
+  parser.add_argument("--tag", default=["main"], action="append")
   return parser.parse_args()
 
 def parse_csv(path_to_csv):
@@ -65,8 +67,7 @@ def build_docker_image():
   logging.debug(logs)
   return image
 
-def run_docker_with_archive(image, student_files_dir):
-
+def run_docker_with_archive(image, student_files_dir, tag_to_test):
 
   tarstream = io.BytesIO()
   with tarfile.open(fileobj=tarstream, mode="w") as tarhandle:
@@ -86,14 +87,16 @@ def run_docker_with_archive(image, student_files_dir):
   exit_code, output = container.exec_run("tree /tmp/grading/programming-assignments/PA1/")
   logging.debug(output.decode())
   
-  exit_code, output = container.exec_run(
-    """
+  
+  run_str = f"""
     bash -c '
-      cd /tmp/grading/programming-assignments/PA1
-      timeout 10 python ../../helpers/grader.py --output /tmp/results.json
+      git checkout {tag_to_test} || echo "" > /dev/null;
+      cd /tmp/grading/programming-assignments/PA1 ;
+      timeout 30   python ../../helpers/grader.py --output /tmp/results.json ;
     '
     """
-  )
+  logging.debug(f"run_str: {run_str}")
+  exit_code, output = container.exec_run(run_str)
   try:
     bits, stats = container.get_archive("/tmp/results.json")
   except docker.errors.NotFound:
@@ -146,9 +149,8 @@ def main():
   args = parse_flags()
   
   df = parse_csv(args.csv_in)
-  assignment_name = df.columns[-1]
+  assignment_name = df.columns[5]
   
-  #temp_dir = tempfile.TemporaryDirectory()
   temp_dir = os.path.expanduser("~/scratch/grading")
   os.chdir(temp_dir)
   try:
@@ -179,12 +181,25 @@ def main():
     logging.debug(f"contents: {os.listdir('./student_code')}")
     
     # Run docker by passing in files
-    results = run_docker_with_archive(image, os.path.abspath("./student_code"))
-    print(f"{i} : {student} : {results['score']}")
-    write_feedback(student, results)
+    best_results = {"score" : float('-inf')}
+    for tag_to_test in args.tags:
+      logging.info(f"tag: {tag_to_test}")
+      worst_results = {"score" : float('inf')}
+      for i in range(args.num_repeats):
+        logging.info(f"i: {i}")
+        results = run_docker_with_archive(image, os.path.abspath("./student_code"), tag_to_test)
+        logging.info(f"score: {results['score']}")
+        if results["score"] < worst_results["score"]:
+          worst_results = results
+      if worst_results["score"] > best_results["score"]:
+        best_results = worst_results
+    
+    print(f"{i} : {student} : {best_results['score']}")
+    write_feedback(student, best_results)
     student_index = df.index[df['ID'] == int(student_id)]
-    df.loc[student_index, assignment_name] = results['score']
-  df.to_csv("scores.csv")
+    df.loc[student_index, assignment_name] = best_results['score']
+    
+  df.to_csv("scores.csv", index=False)
 
 
 
