@@ -81,40 +81,41 @@ def run_docker_with_archive(image, student_files_dir, tag_to_test, programming_a
     detach=True,
     tty=True
   )
-  container.put_archive(f"/tmp/grading/programming-assignments/{programming_assignment}/src", tarstream)
-  
-  exit_code, output = container.exec_run(f"ls -l /tmp/grading/programming-assignments/{programming_assignment}/")
-  logging.debug(output.decode())
-  exit_code, output = container.exec_run(f"tree /tmp/grading/programming-assignments/{programming_assignment}/")
-  logging.debug(output.decode())
-  
-  
-  run_str = f"""
-    bash -c '
-      git checkout {tag_to_test} || echo "" > /dev/null;
-      cd /tmp/grading/programming-assignments/{programming_assignment} ;
-      timeout 30   python ../../helpers/grader.py --output /tmp/results.json ;
-    '
-    """
-  logging.debug(f"run_str: {run_str}")
-  exit_code, output = container.exec_run(run_str)
   try:
-    bits, stats = container.get_archive("/tmp/results.json")
-  except docker.errors.NotFound:
-    return { "score" : 0.0, "build_logs" : [output]}
-  f = io.BytesIO()
-  for chunk in bits:
-    f.write(chunk)
-  f.seek(0)
-  
-  with tarfile.open(fileobj=f, mode="r") as tarhandle:
-    results_f = tarhandle.getmember("results.json")
-    f = tarhandle.extractfile(results_f)
+    container.put_archive(f"/tmp/grading/programming-assignments/{programming_assignment}/src", tarstream)
+    
+    exit_code, output = container.exec_run(f"ls -l /tmp/grading/programming-assignments/{programming_assignment}/")
+    logging.debug(output.decode())
+    exit_code, output = container.exec_run(f"tree /tmp/grading/programming-assignments/{programming_assignment}/")
+    logging.debug(output.decode())
+    
+    
+    run_str = f"""
+      bash -c '
+        git checkout {tag_to_test};
+        cd /tmp/grading/programming-assignments/{programming_assignment} ;
+        timeout 30   python ../../helpers/grader.py --output /tmp/results.json ;
+      '
+      """
+    logging.debug(f"run_str: {run_str}")
+    exit_code, output = container.exec_run(run_str)
+    try:
+      bits, stats = container.get_archive("/tmp/results.json")
+    except docker.errors.NotFound:
+      return { "score" : 0.0, "build_logs" : [output]}
+    f = io.BytesIO()
+    for chunk in bits:
+      f.write(chunk)
     f.seek(0)
-    results = json.loads(f.read().decode())
-  
-  container.stop(timeout=1)
-  container.remove()
+    
+    with tarfile.open(fileobj=f, mode="r") as tarhandle:
+      results_f = tarhandle.getmember("results.json")
+      f = tarhandle.extractfile(results_f)
+      f.seek(0)
+      results = json.loads(f.read().decode())
+  finally:
+    container.stop(timeout=1)
+    container.remove()
   
   logging.debug(f"results: {results}")
   
@@ -152,8 +153,8 @@ def main():
   df = parse_csv(args.csv_in)
   assignment_name = df.columns[5]
   
-  temp_dir = os.path.expanduser("~/scratch/grading")
-  os.chdir(temp_dir)
+  #temp_dir = os.path.expanduser("~/scratch/grading")
+  #os.chdir(temp_dir)
   try:
     shutil.copytree(args.path_to_files, os.path.abspath("./submissions"))
   except FileExistsError:
