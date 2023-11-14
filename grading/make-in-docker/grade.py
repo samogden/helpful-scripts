@@ -18,6 +18,7 @@ import pandas
 import numpy as np
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 logging.basicConfig()
 logging.getLogger().setLevel(logging.WARN)
@@ -229,28 +230,23 @@ def main():
   
   
   submissions_to_compare = sorted([(k[0], submissions[k]['.c']) for k in submissions.keys()])
-  similarity = np.zeros((len(submissions), len(submissions)))
-  similarity_dicts = {}
+  df_similarity = pd.DataFrame(columns=[name for (name, _) in submissions_to_compare])
+  print(df_similarity)
   
-  for name1, sub1 in submissions_to_compare:
-    pass
+  df_similarity = pd.DataFrame.from_dict({
+    name1 : {
+      name2 : calc_similarity(os.path.join("./submissions/", sub1), os.path.join("./submissions/", sub2))
+      for (name2, sub2) in submissions_to_compare
+    }
+    for name1, sub1 in submissions_to_compare
+  })
   
-  for i, (name1, sub1) in enumerate(submissions_to_compare):
-    for j, (name2, sub2) in enumerate(submissions_to_compare):
-      similarity[i][j] = calc_similarity(os.path.join("./submissions/", sub1), os.path.join("./submissions/", sub2))
+  print(df_similarity)
   
-  similarity = similarity / similarity.max()
-  print(similarity)
-  plt.imshow(similarity, cmap='hot')
+  plt.imshow(df_similarity.to_numpy(), cmap='hot')
   plt.show()
-
-  # for i,  in range(len(submissions)):
-  #   for j in range(len(submissions)):
-  #     print(f"{submissions[c[i]} x {submissions[j]} : {calc_similarity(submissions[i], submissions[j])}")
-
-
-
-
+  
+  return
 
 
 if __name__ == "__main__":
