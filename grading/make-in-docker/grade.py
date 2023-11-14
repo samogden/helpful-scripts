@@ -34,7 +34,9 @@ def parse_flags():
   parser.add_argument("--num_repeats", default=3)
   parser.add_argument("--tag", default=["main"], action="append", dest="tags")
   parser.add_argument("--assignment", default="PA1")
+  
   parser.add_argument("--confusion_only", action="store_true")
+  parser.add_argument("--threshold", type=float, default=0.8)
   
   args = parser.parse_args()
   
@@ -162,11 +164,20 @@ def get_assignment_column_name(columns, assignment_name):
     if name.startswith(assignment_name):
       return i, name
 
+
+
 def calc_similarity(submission1, submission2):
+  p = subprocess.run(["diff", "-w", submission1, submission2], capture_output=True)
+  # print(f"p -> {p}")
+  return p.stdout.decode().count('\n')
+  return random.random()
+  return 1
+
+def calc_similarity_python(submission1, submission2):
   def clean_line(line: str):
     line = line.strip()
     line = line.split('//')[0]
-    if line == "}": return ""
+    # if line == "}": return ""
     return line
   def parse_lines(lines: List[str]):
     parsed_lines = []
@@ -274,15 +285,27 @@ def main():
   # 2. find next lowest and repeat
   #df_similarity = df_similarity.sort_values(by=[df_similarity.columns[0]])
   
-  df_similarity
-  
   similarity_array = df_similarity.to_numpy()
   min_val = similarity_array.min()
   max_val = similarity_array.max()
   similarity_array = (similarity_array - min_val) / max_val
   
+  df_similarity = 1 - ((df_similarity - min_val) / max_val)
+  
   plt.imshow(similarity_array, cmap='hot')
   plt.show()
+  
+  values = {}
+  for row in df_similarity.index.values:
+    for col in df_similarity.columns.values:
+      if (row == col): continue
+      if (col, row) in values: continue
+      values[(row, col)] = df_similarity.loc[row][col]
+  
+  for names in sorted(values.keys(), key=(lambda n: values[n]), reverse=True):
+    if values[names] >= flags.threshold:
+      print(f"{names} : {values[names]: 0.3f}")
+  
   
   return
 
