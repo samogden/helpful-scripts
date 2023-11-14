@@ -243,7 +243,20 @@ def main():
   
   print(df_similarity)
   
-  plt.imshow(df_similarity.to_numpy(), cmap='hot')
+  # The next line can be expanded
+  # What we want is the top right to be the most similar
+  # So we pick an arbitrary name, then we want to pick the most similar that hasn't yet been picked
+  # Which might be a pain in the ass lol
+  # Basically, it's going to be a sort with a lambda that has a set inside of it that is tracking waht's already been added
+  # And then rotating them around.
+  # There's gotta be a better way...
+  # 1. Find the row with the lowest value, use it as a basis
+  # 2. find next lowest and repeat
+  #df_similarity = df_similarity.sort_values(by=[df_similarity.columns[0]])
+  
+  similarity_array = df_similarity.to_numpy()
+  
+  plt.imshow((similarity_array / similarity_array.max()), cmap='hot')
   plt.show()
   
   return
