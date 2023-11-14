@@ -6,13 +6,18 @@ import json
 import logging
 import os
 import pathlib
+import random
 import shutil
+import subprocess
 import tarfile
 import tempfile
 from typing import Dict
 
 import docker
 import pandas
+import numpy as np
+import matplotlib.pyplot as plt
+import numpy as np
 
 logging.basicConfig()
 logging.getLogger().setLevel(logging.WARN)
@@ -27,12 +32,15 @@ def parse_flags():
   parser.add_argument("--num_repeats", default=3)
   parser.add_argument("--tag", default=["main"], action="append", dest="tags")
   parser.add_argument("--assignment", default="PA1")
-  return parser.parse_args()
+  parser.add_argument("--confusion_only", action="store_true")
+  
+  args = parser.parse_args()
+  
+  return args
 
 def parse_csv(path_to_csv):
   df = pandas.read_csv(path_to_csv)
-  df = df.iloc[:,:6]
-  print(df)
+  #df = df.iloc[:,:6]
   return df
 
 
@@ -147,62 +155,98 @@ def write_feedback(student, results):
       fid.write(results['build_logs'][0].decode())
     fid.write("\n")
 
+def get_assignment_column_name(columns, assignment_name):
+  for i, name in enumerate(columns):
+    if name.startswith(assignment_name):
+      return i, name
+
+def calc_similarity(submission1, submission2):
+  p = subprocess.run(["diff", "-w", submission1, submission2], capture_output=True)
+  # print(f"p -> {p}")
+  return p.stdout.decode().count('\n')
+  return random.random()
+  return 1
+
 def main():
-  args = parse_flags()
+  flags = parse_flags()
   
-  df = parse_csv(args.csv_in)
-  assignment_name = df.columns[5]
+  df = parse_csv(flags.csv_in)
+  assignment_column_number, assignment_name = get_assignment_column_name(df.columns, flags.assignment_name)
+  df = df.iloc[:, np.r_[:5, assignment_column_number]]
   
   #temp_dir = os.path.expanduser("~/scratch/grading")
   #os.chdir(temp_dir)
   try:
-    shutil.copytree(args.path_to_files, os.path.abspath("./submissions"))
+    shutil.copytree(flags.path_to_files, os.path.abspath("./submissions"))
   except FileExistsError:
     pass
   print(f"curr: {os.path.abspath(os.curdir)}")
   
-  image = build_docker_image()
-  
-  if os.path.exists("feedback"): shutil.rmtree("feedback")
-  os.mkdir("feedback")
   
   submissions = get_student_files(os.path.abspath("./submissions"))
-  for (i, (student, student_id)) in enumerate(sorted(submissions.keys())):
-    logging.debug(f"Testing {student}")
+  
+  if not flags.confusion_only:
+    image = build_docker_image()
     
-    # Clean up previous code
-    if os.path.exists("student_code"): shutil.rmtree("student_code")
-    os.mkdir("student_code")
+    if os.path.exists("feedback"): shutil.rmtree("feedback")
+    os.mkdir("feedback")
     
-    # Copy the student code to the staging directory
-    for file_extension in submissions[(student, student_id)].keys():
-      shutil.copy(
-        f"./submissions/{submissions[(student, student_id)][file_extension]}",
-        f"./student_code/student_code{file_extension}"
-      )
-    logging.debug(f"contents: {os.listdir('./student_code')}")
-    
-    # Run docker by passing in files
-    best_results = {"score" : float('-inf')}
-    for tag_to_test in args.tags:
-      logging.info(f"tag: {tag_to_test}")
-      worst_results = {"score" : float('inf')}
-      for i in range(args.num_repeats):
-        logging.info(f"i: {i}")
-        results = run_docker_with_archive(image, os.path.abspath("./student_code"), tag_to_test, args.assignment)
-        logging.info(f"score: {results['score']}")
-        if results["score"] < worst_results["score"]:
-          worst_results = results
-      if worst_results["score"] > best_results["score"]:
-        best_results = worst_results
-    
-    print(f"{i} : {student} : {best_results['score']}")
-    write_feedback(student, best_results)
-    student_index = df.index[df['ID'] == int(student_id)]
-    df.loc[student_index, assignment_name] = best_results['score']
-    
-  df.to_csv("scores.csv", index=False)
+    for (i, (student, student_id)) in enumerate(sorted(submissions.keys())):
+      logging.debug(f"Testing {student}")
+      
+      # Clean up previous code
+      if os.path.exists("student_code"): shutil.rmtree("student_code")
+      os.mkdir("student_code")
+      
+      # Copy the student code to the staging directory
+      for file_extension in submissions[(student, student_id)].keys():
+        shutil.copy(
+          f"./submissions/{submissions[(student, student_id)][file_extension]}",
+          f"./student_code/student_code{file_extension}"
+        )
+      logging.debug(f"contents: {os.listdir('./student_code')}")
+      
+      # Run docker by passing in files
+      best_results = {"score" : float('-inf')}
+      for tag_to_test in flags.tags:
+        logging.info(f"tag: {tag_to_test}")
+        worst_results = {"score" : float('inf')}
+        for i in range(flags.num_repeats):
+          logging.info(f"i: {i}")
+          results = run_docker_with_archive(image, os.path.abspath("./student_code"), tag_to_test, flags.assignment)
+          logging.info(f"score: {results['score']}")
+          if results["score"] < worst_results["score"]:
+            worst_results = results
+        if worst_results["score"] > best_results["score"]:
+          best_results = worst_results
+      
+      print(f"{i} : {student} : {best_results['score']}")
+      write_feedback(student, best_results)
+      student_index = df.index[df['ID'] == int(student_id)]
+      df.loc[student_index, assignment_name] = best_results['score']
+  
+    df.to_csv("scores.csv", index=False)
+  
+  
+  submissions_to_compare = sorted([(k[0], submissions[k]['.c']) for k in submissions.keys()])
+  similarity = np.zeros((len(submissions), len(submissions)))
+  similarity_dicts = {}
+  
+  for name1, sub1 in submissions_to_compare:
+    pass
+  
+  for i, (name1, sub1) in enumerate(submissions_to_compare):
+    for j, (name2, sub2) in enumerate(submissions_to_compare):
+      similarity[i][j] = calc_similarity(os.path.join("./submissions/", sub1), os.path.join("./submissions/", sub2))
+  
+  similarity = similarity / similarity.max()
+  print(similarity)
+  plt.imshow(similarity, cmap='hot')
+  plt.show()
 
+  # for i,  in range(len(submissions)):
+  #   for j in range(len(submissions)):
+  #     print(f"{submissions[c[i]} x {submissions[j]} : {calc_similarity(submissions[i], submissions[j])}")
 
 
 
