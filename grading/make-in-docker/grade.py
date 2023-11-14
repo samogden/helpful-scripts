@@ -1,6 +1,7 @@
 #!env python
 import argparse
 import collections
+import difflib
 import io
 import json
 import logging
@@ -11,7 +12,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
-from typing import Dict
+from typing import Dict, List
 
 import docker
 import pandas
@@ -162,11 +163,30 @@ def get_assignment_column_name(columns, assignment_name):
       return i, name
 
 def calc_similarity(submission1, submission2):
-  p = subprocess.run(["diff", "-w", submission1, submission2], capture_output=True)
-  # print(f"p -> {p}")
-  return p.stdout.decode().count('\n')
-  return random.random()
-  return 1
+  def clean_line(line: str):
+    line = line.strip()
+    line = line.split('//')[0]
+    if line == "}": return ""
+    return line
+  def parse_lines(lines: List[str]):
+    parsed_lines = []
+    for line in lines:
+      line = clean_line(line)
+      if line == "":
+        continue
+      parsed_lines.append(line)
+    return parsed_lines
+  
+  with open(submission1) as fid:
+    lines1 = parse_lines(fid.readlines())
+  with open(submission2) as fid:
+    lines2 = parse_lines(fid.readlines())
+  
+  diffs = difflib.ndiff(lines1, lines2)
+  num_diffs = len([d for d in diffs if not d[0] in ['+', '-', '?']])
+  return num_diffs / len(lines1)
+    
+
 
 def main():
   flags = parse_flags()
@@ -254,9 +274,14 @@ def main():
   # 2. find next lowest and repeat
   #df_similarity = df_similarity.sort_values(by=[df_similarity.columns[0]])
   
-  similarity_array = df_similarity.to_numpy()
+  df_similarity
   
-  plt.imshow((similarity_array / similarity_array.max()), cmap='hot')
+  similarity_array = df_similarity.to_numpy()
+  min_val = similarity_array.min()
+  max_val = similarity_array.max()
+  similarity_array = (similarity_array - min_val) / max_val
+  
+  plt.imshow(similarity_array, cmap='hot')
   plt.show()
   
   return
