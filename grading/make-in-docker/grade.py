@@ -32,6 +32,7 @@ def parse_flags():
   parser.add_argument("--path_to_files", default="/Users/ssogden/scratch/csT334/submissions")
   parser.add_argument("--assignment_name", default="PA1 - Intro to C and Processes (code)")
   parser.add_argument("--num_repeats", default=3)
+  parser.add_argument("--use_max", action="store_true")
   parser.add_argument("--tag", default=["main"], action="append", dest="tags")
   parser.add_argument("--assignment", default="PA1")
   
@@ -102,11 +103,12 @@ def run_docker_with_archive(image, student_files_dir, tag_to_test, programming_a
     logging.debug(output.decode())
     
     
+    container.exec_run(f"bash -c 'git checkout {tag_to_test}'")
+    
     run_str = f"""
       bash -c '
-        git checkout {tag_to_test};
         cd /tmp/grading/programming-assignments/{programming_assignment} ;
-        timeout 30   python ../../helpers/grader.py --output /tmp/results.json ;
+        timeout 600 python ../../helpers/grader.py --output /tmp/results.json ;
       '
       """
     logging.debug(f"run_str: {run_str}")
@@ -238,6 +240,12 @@ def main():
         )
       logging.debug(f"contents: {os.listdir('./student_code')}")
       
+      # Define a comparison function to allow us to pick either the best or worst outcome
+      def compare(score1, score2):
+        if flags.use_max:
+          return score2 > score1
+        return score1 > score2
+      
       # Run docker by passing in files
       best_results = {"score" : float('-inf')}
       for tag_to_test in flags.tags:
@@ -249,7 +257,7 @@ def main():
           logging.info(f"score: {results['score']}")
           if results["score"] < worst_results["score"]:
             worst_results = results
-        if worst_results["score"] > best_results["score"]:
+        if compare(worst_results["score"], best_results["score"]):
           best_results = worst_results
       
       print(f"{i} : {student} : {best_results['score']}")
@@ -259,7 +267,7 @@ def main():
   
     df.to_csv("scores.csv", index=False)
   
-  
+  logging.debug(f"submissions: {submissions.keys()}")
   submissions_to_compare = sorted([(k[0], submissions[k]['.c']) for k in submissions.keys()])
   df_similarity = pd.DataFrame(columns=[name for (name, _) in submissions_to_compare])
   print(df_similarity)
