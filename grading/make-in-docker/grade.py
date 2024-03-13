@@ -35,6 +35,7 @@ def parse_flags():
   parser.add_argument("--use_max", action="store_true")
   parser.add_argument("--tag", default=["main"], action="append", dest="tags")
   parser.add_argument("--assignment", default="PA1")
+  parser.add_argument("--github_repo", default="https://github.com/samogden/CST334-assignments.git")
   
   parser.add_argument("--confusion_only", action="store_true")
   parser.add_argument("--threshold", type=float, default=0.8)
@@ -63,12 +64,12 @@ def get_student_files(submissions_dir) -> Dict[str,Dict[str,str]]:
   return submission_files
 
 
-def build_docker_image():
+def build_docker_image(github_repo="https://github.com/samogden/CST334-assignments.git"):
   
-  docker_file = io.BytesIO("""
+  docker_file = io.BytesIO(f"""
   FROM samogden/csumb:cst334
-  RUN git clone https://github.com/samogden/CST334-assignments.git /tmp/grading
-  WORKDIR /tmp/grading/CST334-assignments
+  RUN git clone {github_repo} /tmp/grading/
+  WORKDIR /tmp/grading
   CMD ["/bin/bash"]
   """.encode())
   
@@ -220,7 +221,7 @@ def main():
   submissions = get_student_files(os.path.abspath("./submissions"))
   
   if not flags.confusion_only:
-    image = build_docker_image()
+    image = build_docker_image(github_repo=flags.github_repo)
     
     if os.path.exists("feedback"): shutil.rmtree("feedback")
     os.mkdir("feedback")
