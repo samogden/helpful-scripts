@@ -23,7 +23,7 @@ import pandas as pd
 
 logging.basicConfig()
 log = logging.getLogger(__name__)
-log.setLevel(logging.DEBUG)
+log.setLevel(logging.INFO)
 
 client = docker.from_env()
 
@@ -40,6 +40,8 @@ def parse_flags():
   
   parser.add_argument("--confusion_only", action="store_true")
   parser.add_argument("--threshold", type=float, default=0.8)
+  
+  parser.add_argument("--debug", action="store_true")
   
   args = parser.parse_args()
   
@@ -61,6 +63,7 @@ def get_student_files(submissions_dir) -> Dict[str,Dict[str,str]]:
     student_name = f.split("_")[0]
     student_name_id = f.split("_")[1] if "LATE" not in f else f.split("_")[2]
     extension = pathlib.Path(f).suffix
+    log.debug(f"{f} : {student_name} {extension}")
     submission_files[(student_name, student_name_id)][extension] = f
   return submission_files
 
@@ -177,8 +180,6 @@ def calc_similarity(submission1, submission2):
   p = subprocess.run(["diff", "-w", submission1, submission2], capture_output=True)
   # print(f"p -> {p}")
   return p.stdout.decode().count('\n')
-  return random.random()
-  return 1
 
 def calc_similarity_python(submission1, submission2):
   def clean_line(line: str):
@@ -208,6 +209,9 @@ def calc_similarity_python(submission1, submission2):
 
 def main():
   flags = parse_flags()
+  
+  if flags.debug:
+    log.setLevel(logging.DEBUG)
   
   df = parse_csv(flags.csv_in)
   assignment_column_number, assignment_name = get_assignment_column_name(df.columns, flags.assignment_name)
@@ -258,10 +262,8 @@ def main():
       else:
         curr_results = {"score" : float('+inf'), "build_logs" : None}
       for tag_to_test in flags.tags:
-        log.info(f"tag: {tag_to_test}")
         # worst_results = {"score" : float('inf')}
         for i in range(flags.num_repeats):
-          log.info(f"i: {i}")
           new_results = run_docker_with_archive(image, os.path.abspath("./student_code"), tag_to_test, flags.assignment)
           if is_better(new_results['score'], curr_results['score']):
             log.debug(f"Updating to use new results: {new_results}")
@@ -271,11 +273,12 @@ def main():
       write_feedback(student, curr_results)
       student_index = df.index[df['ID'] == int(student_id)]
       df.loc[student_index, assignment_name] = curr_results['score']
-      break
+      if flags.debug:
+        break
     df.to_csv("scores.csv", index=False)
   
   log.debug(f"submissions: {submissions.keys()}")
-  submissions_to_compare = sorted([(k[0], submissions[k]['.c']) for k in submissions.keys()])
+  submissions_to_compare = sorted([(k[0], submissions[k]['.c']) for k in submissions.keys() if '.c' in submissions[k]])
   df_similarity = pd.DataFrame(columns=[name for (name, _) in submissions_to_compare])
   print(df_similarity)
   
