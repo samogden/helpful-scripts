@@ -22,7 +22,8 @@ import numpy as np
 import pandas as pd
 
 logging.basicConfig()
-logging.getLogger().setLevel(logging.WARN)
+log = logging.getLogger(__name__)
+log.setLevel(logging.DEBUG)
 
 client = docker.from_env()
 
@@ -54,7 +55,7 @@ def get_student_files(submissions_dir) -> Dict[str,Dict[str,str]]:
   submission_files = collections.defaultdict(dict)
   files = os.listdir(submissions_dir)
   for f in files:
-    logging.debug(f"f: {f}")
+    log.debug(f"f: {f}")
     if "student_code" not in f:
       continue
     student_name = f.split("_")[0]
@@ -79,7 +80,7 @@ def build_docker_image(github_repo="https://github.com/samogden/CST334-assignmen
     pull=True,
     nocache=True
   )
-  logging.debug(logs)
+  log.debug(logs)
   return image
 
 def run_docker_with_archive(image, student_files_dir, tag_to_test, programming_assignment):
@@ -99,9 +100,9 @@ def run_docker_with_archive(image, student_files_dir, tag_to_test, programming_a
     container.put_archive(f"/tmp/grading/programming-assignments/{programming_assignment}/src", tarstream)
     
     exit_code, output = container.exec_run(f"ls -l /tmp/grading/programming-assignments/{programming_assignment}/")
-    logging.debug(output.decode())
+    log.debug(output.decode())
     exit_code, output = container.exec_run(f"tree /tmp/grading/programming-assignments/{programming_assignment}/")
-    logging.debug(output.decode())
+    log.debug(output.decode())
     
     
     container.exec_run(f"bash -c 'git checkout {tag_to_test}'")
@@ -112,12 +113,12 @@ def run_docker_with_archive(image, student_files_dir, tag_to_test, programming_a
         timeout 600 python ../../helpers/grader.py --output /tmp/results.json ;
       '
       """
-    logging.debug(f"run_str: {run_str}")
+    log.debug(f"run_str: {run_str}")
     exit_code, output = container.exec_run(run_str)
     try:
       bits, stats = container.get_archive("/tmp/results.json")
     except docker.errors.NotFound:
-      return { "score" : 0.0, "build_logs" : [output]}
+      return { "score" : 0.0, "build_logs" : None}
     f = io.BytesIO()
     for chunk in bits:
       f.write(chunk)
@@ -131,8 +132,8 @@ def run_docker_with_archive(image, student_files_dir, tag_to_test, programming_a
   finally:
     container.stop(timeout=1)
     container.remove()
-  
-  logging.debug(f"results: {results}")
+    
+  log.debug(f"results: {results}")
   
   return results
   
@@ -155,7 +156,10 @@ def write_feedback(student, results):
     
     fid.write("BUILD INFO:\n")
     try:
-      fid.write(json.decoder.JSONDecoder().decode(results['build_logs'][0]))
+      if results['build_logs'] is None:
+        fid.write("No build results available.  Did it time out?")
+      else:
+        fid.write(json.decoder.JSONDecoder().decode(results['build_logs'][0]))
     except (json.decoder.JSONDecodeError):
       fid.write(results['build_logs'])
     except TypeError:
@@ -227,7 +231,7 @@ def main():
     os.mkdir("feedback")
     
     for (i, (student, student_id)) in enumerate(sorted(submissions.keys())):
-      logging.debug(f"Testing {student}")
+      log.debug(f"Testing {student}")
       
       # Clean up previous code
       if os.path.exists("student_code"): shutil.rmtree("student_code")
@@ -239,7 +243,7 @@ def main():
           f"./submissions/{submissions[(student, student_id)][file_extension]}",
           f"./student_code/student_code{file_extension}"
         )
-      logging.debug(f"contents: {os.listdir('./student_code')}")
+      log.debug(f"contents: {os.listdir('./student_code')}")
       
       # Define a comparison function to allow us to pick either the best or worst outcome
       def compare(score1, score2):
@@ -248,19 +252,19 @@ def main():
         return score1 > score2
       
       # Run docker by passing in files
-      best_results = {"score" : float('-inf')}
+      best_results = {"score" : float('-inf'), "build_logs" : None}
       for tag_to_test in flags.tags:
-        logging.info(f"tag: {tag_to_test}")
+        log.info(f"tag: {tag_to_test}")
         worst_results = {"score" : float('inf')}
         for i in range(flags.num_repeats):
-          logging.info(f"i: {i}")
+          log.info(f"i: {i}")
           results = run_docker_with_archive(image, os.path.abspath("./student_code"), tag_to_test, flags.assignment)
-          logging.info(f"score: {results['score']}")
+          log.info(f"score: {results['score']}")
           if results["score"] < worst_results["score"]:
             worst_results = results
         if compare(worst_results["score"], best_results["score"]):
           best_results = worst_results
-      
+      best_results['score'] = max([best_results['score'], 0])
       print(f"{i} : {student} : {best_results['score']}")
       write_feedback(student, best_results)
       student_index = df.index[df['ID'] == int(student_id)]
@@ -268,7 +272,7 @@ def main():
   
     df.to_csv("scores.csv", index=False)
   
-  logging.debug(f"submissions: {submissions.keys()}")
+  log.debug(f"submissions: {submissions.keys()}")
   submissions_to_compare = sorted([(k[0], submissions[k]['.c']) for k in submissions.keys()])
   df_similarity = pd.DataFrame(columns=[name for (name, _) in submissions_to_compare])
   print(df_similarity)
