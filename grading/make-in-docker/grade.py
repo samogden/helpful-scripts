@@ -246,30 +246,32 @@ def main():
       log.debug(f"contents: {os.listdir('./student_code')}")
       
       # Define a comparison function to allow us to pick either the best or worst outcome
-      def compare(score1, score2):
+      def is_better(score1, score2):
+        log.debug(f"is_better({score1}, {score2})")
         if flags.use_max:
-          return score2 > score1
-        return score1 > score2
+          return score2 < score1
+        return score1 < score2
       
       # Run docker by passing in files
-      best_results = {"score" : float('-inf'), "build_logs" : None}
+      if flags.use_max:
+        curr_results = {"score" : float('-inf'), "build_logs" : None}
+      else:
+        curr_results = {"score" : float('+inf'), "build_logs" : None}
       for tag_to_test in flags.tags:
         log.info(f"tag: {tag_to_test}")
-        worst_results = {"score" : float('inf')}
+        # worst_results = {"score" : float('inf')}
         for i in range(flags.num_repeats):
           log.info(f"i: {i}")
-          results = run_docker_with_archive(image, os.path.abspath("./student_code"), tag_to_test, flags.assignment)
-          log.info(f"score: {results['score']}")
-          if results["score"] < worst_results["score"]:
-            worst_results = results
-        if compare(worst_results["score"], best_results["score"]):
-          best_results = worst_results
-      best_results['score'] = max([best_results['score'], 0])
-      print(f"{i} : {student} : {best_results['score']}")
-      write_feedback(student, best_results)
+          new_results = run_docker_with_archive(image, os.path.abspath("./student_code"), tag_to_test, flags.assignment)
+          if is_better(new_results['score'], curr_results['score']):
+            log.debug(f"Updating to use new results: {new_results}")
+            curr_results = new_results
+      curr_results['score'] = max([curr_results['score'], 0])
+      print(f"{i} : {student} : {curr_results['score']}")
+      write_feedback(student, curr_results)
       student_index = df.index[df['ID'] == int(student_id)]
-      df.loc[student_index, assignment_name] = best_results['score']
-  
+      df.loc[student_index, assignment_name] = curr_results['score']
+      break
     df.to_csv("scores.csv", index=False)
   
   log.debug(f"submissions: {submissions.keys()}")
