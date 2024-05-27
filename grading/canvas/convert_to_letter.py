@@ -48,8 +48,8 @@ class GradingDict():
     
 def parse_flags():
   parser = argparse.ArgumentParser()
-  parser.add_argument("--round_normally", action="store_true", help="Round normally instead of simply using the ceiling function")
-  parser.add_argument("--input_file", default="/Users/ssogden/Documents/CSUMB/Fall2023/CST334/final/2023-12-31T0905_Grades-CST334-M_01-02_FA23.csv")
+  parser.add_argument("--round_weirdly", dest="round_normally", action="store_false", help="Round normally instead of simply using the ceiling function")
+  parser.add_argument("--input_file", required=True)
   parser.add_argument("--input_html", default="/Users/ssogden/Documents/CSUMB/Fall2023/CST334/final/01.html")
   parser.add_argument("--rubric_dict", default=None, help="Path to json file containing rubric dictionary")
   
