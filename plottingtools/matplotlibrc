@@ -1,0 +1,50 @@
+font.family           : sans-serif
+font.weight           : light
+font.style            : normal
+font.size             : 8
+#font.sans-serif       : [Geneva Lucid Arial Helvetica Avant Garde sans-serif]
+
+axes.edgecolor        : 0.5
+axes.labelpad         : 1.0
+axes.axisbelow        : True
+#axes.xmargin      : .9
+#axes.grid.which   : major
+
+xtick.major.size      : 2.5
+xtick.major.pad       : 1.0
+xtick.direction       : in
+xtick.labelsize       : medium
+ytick.major.size      : 2.5
+ytick.major.pad       : 1.0
+ytick.direction       : in
+ytick.labelsize       : medium
+
+axes.linewidth        : 0.8
+axes.grid             : True
+axes.grid.axis        : y
+grid.linestyle        : :
+grid.linewidth        : 0.5
+
+legend.fontsize       : medium
+legend.borderpad      : 0.3
+legend.labelspacing   : 0.15
+legend.handlelength   : 1.0
+legend.handletextpad  : 0.5
+legend.columnspacing  : 1.0
+legend.frameon        : True
+legend.framealpha     : 0.8
+
+lines.markersize      : 4
+markers.fillstyle     : none
+lines.color           : red
+
+errorbar.capsize      : 2
+
+savefig.bbox          : tight
+savefig.format        : pdf
+
+figure.autolayout     : False
+savefig.pad_inches  : 0.02
+
+pdf.fonttype : 42
+ps.fonttype : 42
