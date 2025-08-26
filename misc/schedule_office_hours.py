@@ -152,12 +152,36 @@ def greedy_select(slots: List[Slot], all_students: List[str], max_hours: int, co
     # if we hit 100% coverage and user wants additional suggestions
     additional_suggestions = []
     if suggest_after_100 > 0 and len(covered) >= zero_excluded_total:
-        # sort remaining slots by total availability (popularity)
-        remaining_sorted = sorted(remaining, key=lambda s: (-s.pop, s.day, s.hour24))
+        # run greedy algorithm again on remaining slots to find optimal alternative set
+        alt_covered: Set[str] = set()
+        alt_chosen: List[Slot] = []
+        alt_remaining = remaining[:]
+        
+        for _ in range(suggest_after_100):
+            if not alt_remaining:
+                break
+                
+            # find best slot among remaining alternatives
+            candidates = []
+            for s in alt_remaining:
+                gain = len(s.avail - alt_covered)
+                candidates.append((gain, s.pop, s.day, s.hour24, s))
+            
+            candidates.sort(key=lambda x: (-x[0], -x[1], x[2], x[3]))
+            
+            if not candidates or candidates[0][0] == 0:
+                break
+                
+            best = candidates[0][4]
+            alt_chosen.append(best)
+            alt_covered |= best.avail
+            
+            # remove chosen slot
+            alt_remaining = [s for s in alt_remaining if not (s.day == best.day and s.hour24 == best.hour24)]
+        
         additional_suggestions = [
-            {"day": s.day, "hour_raw": s.hour24, "total_avail": s.pop}
-            for s in remaining_sorted[:suggest_after_100]
-            if s.pop > 0
+            {"day": s.day, "hour_raw": s.hour24, "total_avail": s.pop, "marginal_gain": len(s.avail)}
+            for s in alt_chosen
         ]
 
     return {
@@ -196,10 +220,10 @@ def print_report(info: Dict[str, Any]) -> None:
     
     # show additional high-quality suggestions after 100% coverage
     if "additional_suggestions" in info and info["additional_suggestions"]:
-        print(f"\nAdditional high-quality time slots (since 100% coverage achieved):")
-        for sugg in info["additional_suggestions"]:
+        print(f"\nOptimal alternative time slots (since 100% coverage achieved):")
+        for i, sugg in enumerate(info["additional_suggestions"], 1):
             sugg_hr, sugg_suf = _fmt_noon_anchored(sugg["hour_raw"])
-            print(f"  {sugg['day']} @ {sugg_hr}{sugg_suf} ({sugg['total_avail']} students available)")
+            print(f"  {i}. {sugg['day']} @ {sugg_hr}{sugg_suf} ({sugg['marginal_gain']} students, {sugg['total_avail']} total)")
 
 
 def main():
