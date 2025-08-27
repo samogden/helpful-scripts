@@ -149,9 +149,9 @@ def greedy_select(slots: List[Slot], all_students: List[str], max_hours: int, co
         # remove chosen slot (dedupe by (day, hour))
         remaining = [s for s in remaining if not (s.day == best.day and s.hour24 == best.hour24)]
 
-    # if we hit 100% coverage and user wants additional suggestions
+    # if we hit target coverage and user wants additional suggestions
     additional_suggestions = []
-    if suggest_after_100 > 0 and len(covered) >= zero_excluded_total:
+    if suggest_after_100 > 0 and len(covered) >= required_coverage:
         # run greedy algorithm again on remaining slots to find optimal alternative set
         alt_covered: Set[str] = set()
         alt_chosen: List[Slot] = []
@@ -179,10 +179,24 @@ def greedy_select(slots: List[Slot], all_students: List[str], max_hours: int, co
             # remove chosen slot
             alt_remaining = [s for s in alt_remaining if not (s.day == best.day and s.hour24 == best.hour24)]
         
-        additional_suggestions = [
-            {"day": s.day, "hour_raw": s.hour24, "total_avail": s.pop, "marginal_gain": len(s.avail)}
-            for s in alt_chosen
-        ]
+        # calculate cumulative coverage for alternative suggestions
+        alt_cdf = []
+        alt_cum_covered: Set[str] = set()
+        for s in alt_chosen:
+            alt_cum_covered |= s.avail
+            alt_cdf.append(len(alt_cum_covered))
+        
+        additional_suggestions = []
+        for i, s in enumerate(alt_chosen):
+            marginal = len(s.avail - (alt_cum_covered if i == 0 else 
+                         set().union(*[chosen.avail for chosen in alt_chosen[:i]])))
+            additional_suggestions.append({
+                "day": s.day, 
+                "hour_raw": s.hour24, 
+                "total_avail": s.pop, 
+                "marginal_gain": len(s.avail),
+                "cumulative_coverage": alt_cdf[i]
+            })
 
     return {
         "selected_slots": [{"day": s.day, "hour_raw": s.hour24} for s in chosen],
@@ -218,9 +232,10 @@ def print_report(info: Dict[str, Any]) -> None:
                 alt_hr, alt_suf = _fmt_noon_anchored(alt["hour_raw"])
                 print(f"{'':>{pad+2}}     {alt['day']} @ {alt_hr}{alt_suf} (+{alt['marginal_gain']} students, {alt['total_avail']} total)")
     
-    # show additional high-quality suggestions after 100% coverage
+    # show additional high-quality suggestions after target coverage achieved
     if "additional_suggestions" in info and info["additional_suggestions"]:
-        print(f"\nOptimal alternative time slots (since 100% coverage achieved):")
+        target_pct = info["target_coverage_factor"] * 100
+        print(f"\nOptimal alternative time slots (since {target_pct:.0f}% coverage achieved):")
         for i, sugg in enumerate(info["additional_suggestions"], 1):
             sugg_hr, sugg_suf = _fmt_noon_anchored(sugg["hour_raw"])
             print(f"  {i}. {sugg['day']} @ {sugg_hr}{sugg_suf} ({sugg['marginal_gain']} students, {sugg['total_avail']} total)")
@@ -232,7 +247,7 @@ def main():
     ap.add_argument("--max-hours", type=int, default=4, help="Max number of office-hour slots to choose")
     ap.add_argument("--coverage", type=float, default=1.0, help="Target coverage factor (0..1)")
     ap.add_argument("--show-alternatives", type=int, default=0, help="Show N alternative time slots for each selection")
-    ap.add_argument("--suggest-after-100", type=int, default=0, help="After hitting 100% coverage, suggest N additional high-quality time slots")
+    ap.add_argument("--suggest-after-100", type=int, default=0, help="After hitting target coverage, suggest N additional optimal time slots")
     args = ap.parse_args()
 
     slots, students, _, _ = load_slots(args.csv_path)
