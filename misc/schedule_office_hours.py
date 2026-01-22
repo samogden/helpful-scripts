@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 import argparse
+import ast
+import re
 from dataclasses import dataclass
 from typing import Dict, Any, List, Set, Tuple
+from urllib.parse import urlparse
+from urllib.request import urlopen
 
 import numpy as np
 import pandas as pd
@@ -38,6 +42,240 @@ def _hour_from_time_str(s: str) -> int:
     return int(str(s).split(":")[0]) % 24
 
 
+def _is_url(s: str) -> bool:
+    try:
+        parsed = urlparse(s)
+    except ValueError:
+        return False
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
+def _parse_js_literal(text: str) -> Any:
+    # Best-effort parsing for JS literals (arrays/objects) into Python.
+    cleaned = text.strip()
+    cleaned = re.sub(r"\bnull\b", "None", cleaned)
+    cleaned = re.sub(r"\btrue\b", "True", cleaned)
+    cleaned = re.sub(r"\bfalse\b", "False", cleaned)
+    cleaned = re.sub(r"\bundefined\b", "None", cleaned)
+    cleaned = re.sub(r"new Array\((.*?)\)", r"[\1]", cleaned)
+    return ast.literal_eval(cleaned)
+
+
+def _extract_js_var(html: str, name: str) -> Any:
+    pattern = re.compile(
+        rf"^\s*(?:var|let|const)?\s*(?:window\.)?{re.escape(name)}\s*=\s*(.*?);",
+        re.DOTALL | re.MULTILINE,
+    )
+    match = pattern.search(html)
+    if not match:
+        return None
+    return _parse_js_literal(match.group(1))
+
+
+def _extract_js_assignments(html: str, name: str) -> Dict[int, Any]:
+    pattern = re.compile(rf"(?:window\.)?{re.escape(name)}\[(\d+)\]\s*=\s*(.*?);")
+    assignments = {}
+    for idx, value in pattern.findall(html):
+        assignments[int(idx)] = _parse_js_literal(value)
+    return assignments
+
+
+def _extract_js_array(html: str, names: List[str]) -> List[Any]:
+    for name in names:
+        value = _extract_js_var(html, name)
+        if isinstance(value, list) and value:
+            return value
+        if isinstance(value, dict) and value:
+            # convert numeric-keyed dict to list if possible
+            if all(isinstance(k, int) for k in value.keys()):
+                max_idx = max(value.keys())
+                out = [None] * (max_idx + 1)
+                for k, v in value.items():
+                    out[k] = v
+                return out
+    for name in names:
+        assignments = _extract_js_assignments(html, name)
+        if assignments:
+            max_idx = max(assignments.keys())
+            out = [None] * (max_idx + 1)
+            for k, v in assignments.items():
+                out[k] = v
+            return out
+    return []
+
+
+def _extract_js_dict(html: str, names: List[str]) -> Dict[Any, Any]:
+    for name in names:
+        value = _extract_js_var(html, name)
+        if isinstance(value, dict):
+            return value
+    for name in names:
+        assignments = _extract_js_assignments(html, name)
+        if assignments:
+            return assignments
+    return {}
+
+
+def _extract_available_at_slot(html: str) -> Dict[int, List[int]]:
+    pattern = re.compile(r"AvailableAtSlot\[(\d+)\]\.push\((\d+)\)")
+    out: Dict[int, List[int]] = {}
+    for slot_id, person_id in pattern.findall(html):
+        slot_idx = int(slot_id)
+        out.setdefault(slot_idx, []).append(int(person_id))
+    return out
+
+
+def _extract_grid_day_labels(html: str) -> List[str]:
+    day_map = {
+        "Mon": "Monday",
+        "Tue": "Tuesday",
+        "Wed": "Wednesday",
+        "Thu": "Thursday",
+        "Fri": "Friday",
+        "Sat": "Saturday",
+        "Sun": "Sunday",
+    }
+    pattern = re.compile(r">(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)<")
+    labels = []
+    for match in pattern.findall(html):
+        short = match.strip("><")
+        full = day_map.get(short, short)
+        if full not in labels:
+            labels.append(full)
+    return labels
+
+
+def _extract_grid_start_time(html: str) -> Tuple[int, int]:
+    pattern = re.compile(r">(\d{1,2}):00\s*([AP]M)", re.IGNORECASE)
+    match = pattern.search(html)
+    if not match:
+        return 8, 0
+    hour24, minute = _parse_time_string_to_hour_minute(f"{match.group(1)}:00{match.group(2)}")
+    return hour24, minute
+
+
+def _extract_grid_time_positions(html: str) -> Dict[int, Tuple[int, int]]:
+    pattern = re.compile(r"data-col=\"(\d+)\" data-row=\"(\d+)\" data-time=\"(\d+)\"")
+    out: Dict[int, Tuple[int, int]] = {}
+    for col, row, tval in pattern.findall(html):
+        out[int(tval)] = (int(row), int(col))
+    return out
+
+
+def _parse_time_string_to_hour_minute(s: str) -> Tuple[int, int]:
+    raw = s.strip().lower().replace(" ", "")
+    match = re.match(r"^(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?([ap]m)?$", raw)
+    if not match:
+        raise ValueError(f"Unrecognized time string: {s}")
+    hour = int(match.group(1))
+    minute = int(match.group(2) or 0)
+    suffix = match.group(4)
+    if suffix == "am":
+        hour24 = 0 if hour == 12 else hour
+    elif suffix == "pm":
+        hour24 = 12 if hour == 12 else hour + 12
+    else:
+        hour24 = hour
+    return hour24, minute
+
+
+def _format_time_no_ampm(hour24: int, minute: int) -> str:
+    # Match the existing CSV export style: 12 maps to 0, drop am/pm.
+    hour12 = hour24 % 12
+    return f"{hour12}:{minute:02d}:00"
+
+
+def _when2meet_url_to_dataframe(url: str) -> pd.DataFrame:
+    url = url.replace("\\?", "?")
+    with urlopen(url) as resp:
+        html = resp.read().decode("utf-8", errors="replace")
+
+    people = _extract_js_dict(html, ["People", "PeopleList", "PeopleNames"])
+    if not people:
+        people_list = _extract_js_array(html, ["People", "PeopleList", "PeopleNames"])
+    else:
+        people_list = []
+
+    available = _extract_js_dict(html, ["AvailableIDs", "Availability", "AvailableTimes"])
+    if not available:
+        available_list = _extract_js_array(html, ["AvailableIDs", "Availability", "AvailableTimes"])
+        if available_list and any(isinstance(v, list) for v in available_list):
+            available = {i: v for i, v in enumerate(available_list)}
+    if not available:
+        available = _extract_available_at_slot(html)
+    date_strings = _extract_js_array(html, ["DateStrings", "Dates", "DateList", "DayStrings"])
+    time_strings = _extract_js_array(html, ["TimeStrings", "Times", "TimeList"])
+    date_of_slots = _extract_js_array(html, ["DateOfSlots", "DatesOfSlots"])
+    time_of_slots = _extract_js_array(html, ["TimeOfSlots", "TimesOfSlots", "TimeSlots"])
+    if not time_of_slots:
+        time_of_slots = _extract_js_array(html, ["TimeOfSlot"])
+
+    if not available or (not date_of_slots and not time_of_slots):
+        raise ValueError("Failed to parse When2Meet data from URL; page structure may have changed.")
+
+    people_ids = [i for i in _extract_js_array(html, ["PeopleIDs"]) if i is not None]
+    if not people_ids and people:
+        people_ids = sorted((int(k) for k in people.keys()), key=int)
+    if not people_ids and people_list:
+        people_ids = list(range(1, len(people_list) + 1))
+    if not people_ids:
+        # fallback to any IDs we can infer from availability
+        seen_ids = set()
+        for ids in available.values():
+            if isinstance(ids, list):
+                seen_ids.update(int(i) for i in ids)
+        people_ids = sorted(seen_ids)
+
+    grid_days = _extract_grid_day_labels(html)
+    grid_start_hour, grid_start_minute = _extract_grid_start_time(html)
+    grid_positions = _extract_grid_time_positions(html)
+
+    rows = []
+    num_slots = min(len(date_of_slots), len(time_of_slots)) if date_of_slots else len(time_of_slots)
+    for idx in range(num_slots):
+        date_val = date_of_slots[idx] if date_of_slots else None
+        if date_val is not None:
+            if isinstance(date_val, (int, float)) and date_strings:
+                date_str = date_strings[int(date_val)]
+            else:
+                date_str = str(date_val)
+            day = str(date_str).split(",")[0].strip()
+        else:
+            time_val = time_of_slots[idx]
+            row_col = grid_positions.get(int(time_val)) if isinstance(time_val, (int, float, str)) else None
+            if row_col is None and grid_days:
+                col_count = len(grid_days)
+                row_col = (idx // col_count, idx % col_count)
+            if row_col is None:
+                raise ValueError("Could not determine day/time grid layout from When2Meet HTML.")
+            row_idx, col_idx = row_col
+            day = grid_days[col_idx] if col_idx < len(grid_days) else f"Day{col_idx + 1}"
+
+        time_val = time_of_slots[idx]
+        if isinstance(time_val, (int, float)) and time_strings and 0 <= int(time_val) < len(time_strings):
+            hour24, minute = _parse_time_string_to_hour_minute(str(time_strings[int(time_val)]))
+        elif date_of_slots and isinstance(time_val, (int, float)) and int(time_val) >= 24:
+            minutes = int(time_val)
+            hour24, minute = minutes // 60, minutes % 60
+        elif date_of_slots:
+            hour24, minute = _parse_time_string_to_hour_minute(str(time_val))
+        else:
+            start_minutes = grid_start_hour * 60 + grid_start_minute
+            total_minutes = start_minutes + (row_idx * 15)
+            hour24, minute = (total_minutes // 60) % 24, total_minutes % 60
+        time_str = _format_time_no_ampm(hour24, minute)
+
+        available_ids = available.get(idx, available.get(str(idx), []))
+        available_set = {int(i) for i in available_ids} if isinstance(available_ids, list) else set()
+
+        row = {"Day": day, "Time": time_str}
+        for pid in people_ids:
+            row[str(pid)] = 1 if pid in available_set else 0
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
 
 def _fmt_noon_anchored(hour: int) -> Tuple[int, str]:
     hour = int(hour)
@@ -60,8 +298,7 @@ class Slot:
     pop: int          # total availability count for tie-breaking
 
 
-def load_slots(csv_path: str) -> Tuple[List[Slot], List[str], str, str]:
-    df = pd.read_csv(csv_path)
+def _load_slots_from_dataframe(df: pd.DataFrame) -> Tuple[List[Slot], List[str], str, str]:
     colmap = _detect_columns(df)
     day_col, time_col = colmap["day"], colmap["time"]
 
@@ -87,6 +324,14 @@ def load_slots(csv_path: str) -> Tuple[List[Slot], List[str], str, str]:
         )
 
     return slots, [s for s in students], day_col, time_col
+
+
+def load_slots(source: str) -> Tuple[List[Slot], List[str], str, str]:
+    if _is_url(source):
+        df = _when2meet_url_to_dataframe(source)
+    else:
+        df = pd.read_csv(source)
+    return _load_slots_from_dataframe(df)
 
 
 def greedy_select(slots: List[Slot], all_students: List[str], max_hours: int, coverage_factor: float,
@@ -243,14 +488,14 @@ def print_report(info: Dict[str, Any]) -> None:
 
 def main():
     ap = argparse.ArgumentParser(description="Greedy office hours scheduler maximizing marginal coverage.")
-    ap.add_argument("csv_path", help="Path to When2Meet-style CSV")
+    ap.add_argument("source", help="Path to When2Meet-style CSV or a When2Meet URL")
     ap.add_argument("--max-hours", type=int, default=4, help="Max number of office-hour slots to choose")
     ap.add_argument("--coverage", type=float, default=1.0, help="Target coverage factor (0..1)")
     ap.add_argument("--show-alternatives", type=int, default=0, help="Show N alternative time slots for each selection")
     ap.add_argument("--suggest-after-100", type=int, default=0, help="After hitting target coverage, suggest N additional optimal time slots")
     args = ap.parse_args()
 
-    slots, students, _, _ = load_slots(args.csv_path)
+    slots, students, _, _ = load_slots(args.source)
 
     # exclude zero-availability students inside load_slots; remaining student list is post-exclusion
     # (we pass the post-exclusion list into greedy_select)
