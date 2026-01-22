@@ -345,9 +345,17 @@ def greedy_select(slots: List[Slot], all_students: List[str], max_hours: int, co
 
     remaining = slots[:]
 
+    availability_counts = {s: 0 for s in all_students}
+    for slot in slots:
+        for student in slot.avail:
+            availability_counts[student] += 1
+    rarity_weights = {
+        student: (1.0 / availability_counts[student]) if availability_counts[student] else 0.0
+        for student in all_students
+    }
+
     for _ in range(max_hours):
         # pick slot with largest marginal gain; tie-break by overall popularity, then by (day, hour)
-        # also collect alternatives if requested
         candidates = []
         
         for s in remaining:
@@ -362,19 +370,6 @@ def greedy_select(slots: List[Slot], all_students: List[str], max_hours: int, co
             
         best = candidates[0][4]
         best_gain = candidates[0][0]
-        
-        # collect alternatives for this step
-        alternatives = []
-        if show_alternatives > 0:
-            for i in range(1, min(len(candidates), show_alternatives + 1)):
-                gain, pop, day, hour24, slot = candidates[i]
-                if gain > 0:  # only show alternatives that provide some benefit
-                    alternatives.append({
-                        "day": day,
-                        "hour_raw": hour24,
-                        "marginal_gain": gain,
-                        "total_avail": pop
-                    })
 
         chosen.append(best)
         covered |= best.avail
@@ -384,8 +379,7 @@ def greedy_select(slots: List[Slot], all_students: List[str], max_hours: int, co
             "day": best.day,
             "hour_raw": best.hour24,
             "covered_count": len(covered),
-            "covered_frac": len(covered) / denom,
-            "alternatives": alternatives
+            "covered_frac": len(covered) / denom
         })
 
         if len(covered) >= required_coverage:
@@ -397,51 +391,74 @@ def greedy_select(slots: List[Slot], all_students: List[str], max_hours: int, co
     # if we hit target coverage and user wants additional suggestions
     additional_suggestions = []
     if suggest_after_100 > 0 and len(covered) >= required_coverage:
-        # run greedy algorithm again on remaining slots to find optimal alternative set
-        alt_covered: Set[str] = set()
-        alt_chosen: List[Slot] = []
+        # prefer slots that include under-represented students
+        coverage_counts = {s: 0 for s in all_students}
+        for s in chosen:
+            for student in s.avail:
+                coverage_counts[student] += 1
+
         alt_remaining = remaining[:]
-        
         for _ in range(suggest_after_100):
             if not alt_remaining:
                 break
-                
-            # find best slot among remaining alternatives
-            candidates = []
+
+            best = None
+            best_score = 0.0
             for s in alt_remaining:
-                gain = len(s.avail - alt_covered)
-                candidates.append((gain, s.pop, s.day, s.hour24, s))
-            
-            candidates.sort(key=lambda x: (-x[0], -x[1], x[2], x[3]))
-            
-            if not candidates or candidates[0][0] == 0:
+                score = sum(
+                    rarity_weights[student] / (coverage_counts[student] + 1)
+                    for student in s.avail
+                )
+                if score > best_score:
+                    best_score = score
+                    best = s
+
+            if not best or best_score == 0:
                 break
-                
-            best = candidates[0][4]
-            alt_chosen.append(best)
-            alt_covered |= best.avail
-            
-            # remove chosen slot
-            alt_remaining = [s for s in alt_remaining if not (s.day == best.day and s.hour24 == best.hour24)]
-        
-        # calculate cumulative coverage for alternative suggestions
-        alt_cdf = []
-        alt_cum_covered: Set[str] = set()
-        for s in alt_chosen:
-            alt_cum_covered |= s.avail
-            alt_cdf.append(len(alt_cum_covered))
-        
-        additional_suggestions = []
-        for i, s in enumerate(alt_chosen):
-            marginal = len(s.avail - (alt_cum_covered if i == 0 else 
-                         set().union(*[chosen.avail for chosen in alt_chosen[:i]])))
+
             additional_suggestions.append({
-                "day": s.day, 
-                "hour_raw": s.hour24, 
-                "total_avail": s.pop, 
-                "marginal_gain": len(s.avail),
-                "cumulative_coverage": alt_cdf[i]
+                "day": best.day,
+                "hour_raw": best.hour24,
+                "total_avail": best.pop,
+                "weighted_score": best_score,
             })
+
+            for student in best.avail:
+                coverage_counts[student] += 1
+
+            alt_remaining = [s for s in alt_remaining if not (s.day == best.day and s.hour24 == best.hour24)]
+
+    swap_alternatives = []
+    if show_alternatives > 0 and chosen:
+        chosen_keys = {(s.day, s.hour24) for s in chosen}
+        base_covered = set().union(*[s.avail for s in chosen])
+        base_count = len(base_covered)
+
+        for current in chosen:
+            covered_without = base_covered - current.avail
+            candidates = [
+                s for s in slots
+                if (s.day, s.hour24) not in chosen_keys
+            ]
+            ranked = []
+            for s in candidates:
+                gain = len(s.avail - covered_without)
+                coverage_if = len(covered_without | s.avail)
+                delta = coverage_if - base_count
+                ranked.append((gain, s.pop, s.day, s.hour24, delta, coverage_if, s))
+
+            ranked.sort(key=lambda x: (-x[0], -x[1], x[2], x[3]))
+            alternatives = []
+            for gain, pop, day, hour24, delta, coverage_if, _ in ranked[:show_alternatives]:
+                alternatives.append({
+                    "day": day,
+                    "hour_raw": hour24,
+                    "marginal_gain": gain,
+                    "total_avail": pop,
+                    "coverage_if_swapped": coverage_if,
+                    "delta_vs_current": delta,
+                })
+            swap_alternatives.append(alternatives)
 
     return {
         "selected_slots": [{"day": s.day, "hour_raw": s.hour24} for s in chosen],
@@ -450,6 +467,7 @@ def greedy_select(slots: List[Slot], all_students: List[str], max_hours: int, co
         "target_coverage_factor": coverage_factor,
         "cdf": cdf,
         "additional_suggestions": additional_suggestions,
+        "swap_alternatives": swap_alternatives,
     }
 
 
@@ -469,21 +487,34 @@ def print_report(info: Dict[str, Any]) -> None:
 
     for (i, slot), s in zip(enumerate(info["cdf"], 1), lhs_list):
         print(f"{s:<{pad}}  -> CDF: {slot['covered_frac']*100:0.2f}% ({slot['covered_count']} / {denom})")
-        
-        # show alternatives if they exist
-        if "alternatives" in slot and slot["alternatives"]:
-            print(f"{'':>{pad+2}}   Alternatives:")
-            for alt in slot["alternatives"]:
+
+    # show swap alternatives if they exist
+    if info.get("swap_alternatives"):
+        print("\nIf a selected slot is unavailable, suggested replacements:")
+        for i, alternatives in enumerate(info["swap_alternatives"], 1):
+            if not alternatives:
+                continue
+            print(f"  For slot {i}:")
+            for alt in alternatives:
                 alt_hr, alt_suf = _fmt_noon_anchored(alt["hour_raw"])
-                print(f"{'':>{pad+2}}     {alt['day']} @ {alt_hr}{alt_suf} (+{alt['marginal_gain']} students, {alt['total_avail']} total)")
-    
-    # show additional high-quality suggestions after target coverage achieved
-    if "additional_suggestions" in info and info["additional_suggestions"]:
+                delta = alt["delta_vs_current"]
+                delta_str = f"{delta:+d}" if isinstance(delta, int) else f"{delta:+.0f}"
+                print(
+                    f"    {alt['day']} @ {alt_hr}{alt_suf} "
+                    f"(gain {alt['marginal_gain']}, total {alt['total_avail']}, "
+                    f"coverage {alt['coverage_if_swapped']}/{denom}, delta {delta_str})"
+                )
+
+    # show additional weighted suggestions after target coverage achieved
+    if info.get("additional_suggestions"):
         target_pct = info["target_coverage_factor"] * 100
-        print(f"\nOptimal alternative time slots (since {target_pct:.0f}% coverage achieved):")
+        print(f"\nExtra suggestions (weighted toward under-represented students) after {target_pct:.0f}% coverage:")
         for i, sugg in enumerate(info["additional_suggestions"], 1):
             sugg_hr, sugg_suf = _fmt_noon_anchored(sugg["hour_raw"])
-            print(f"  {i}. {sugg['day']} @ {sugg_hr}{sugg_suf} ({sugg['marginal_gain']} students, {sugg['total_avail']} total)")
+            print(
+                f"  {i}. {sugg['day']} @ {sugg_hr}{sugg_suf} "
+                f"(weighted score {sugg['weighted_score']:.2f}, {sugg['total_avail']} total)"
+            )
 
 
 def main():
@@ -491,7 +522,7 @@ def main():
     ap.add_argument("source", help="Path to When2Meet-style CSV or a When2Meet URL")
     ap.add_argument("--max-hours", type=int, default=4, help="Max number of office-hour slots to choose")
     ap.add_argument("--coverage", type=float, default=1.0, help="Target coverage factor (0..1)")
-    ap.add_argument("--show-alternatives", type=int, default=0, help="Show N alternative time slots for each selection")
+    ap.add_argument("--show-alternatives", type=int, default=0, help="Show N replacement options if a selected slot is unavailable")
     ap.add_argument("--suggest-after-100", type=int, default=0, help="After hitting target coverage, suggest N additional optimal time slots")
     args = ap.parse_args()
 
