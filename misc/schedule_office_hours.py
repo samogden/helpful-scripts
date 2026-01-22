@@ -473,48 +473,108 @@ def greedy_select(slots: List[Slot], all_students: List[str], max_hours: int, co
 
 # ---------- CLI / printing ----------
 
-def print_report(info: Dict[str, Any]) -> None:
+def _print_table(headers: List[str], rows: List[List[str]]) -> None:
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(cell))
+
+    def fmt_row(row: List[str]) -> str:
+        return " | ".join(cell.ljust(widths[i]) for i, cell in enumerate(row))
+
+    print(fmt_row(headers))
+    print("-+-".join("-" * w for w in widths))
+    for row in rows:
+        print(fmt_row(row))
+
+
+def print_report(info: Dict[str, Any], use_table: bool = False) -> None:
     denom = max(1, info["total_students_excl_zero"])
     print(f"Coverage rate (excluding zero-availability): {100 * (info['covered_students'] / denom):0.2f}%")
-    print("\nSelected slots and CDF progress:")
+    if use_table:
+        print("\nSelected slots and CDF progress:")
+        rows = []
+        for i, slot in enumerate(info["cdf"], 1):
+            hr, suf = _fmt_noon_anchored(slot["hour_raw"])
+            rows.append([
+                str(i),
+                slot["day"],
+                f"{hr}{suf}",
+                f"{slot['covered_frac']*100:0.2f}%",
+                f"{slot['covered_count']} / {denom}",
+            ])
+        _print_table(["#", "Day", "Time", "CDF", "Covered"], rows)
+    else:
+        print("\nSelected slots and CDF progress:")
+        lhs_list = []
+        for i, slot in enumerate(info["cdf"], 1):
+            hr, suf = _fmt_noon_anchored(slot["hour_raw"])
+            lhs_list.append(f"{i:>2}. {slot['day']} @ {hr}{suf}")
+        pad = max(len(s) for s in lhs_list) if lhs_list else 0
 
-    # build aligned left-hand side: " N. Day @ 12pm"
-    lhs_list = []
-    for i, slot in enumerate(info["cdf"], 1):
-        hr, suf = _fmt_noon_anchored(slot["hour_raw"])
-        lhs_list.append(f"{i:>2}. {slot['day']} @ {hr}{suf}")
-    pad = max(len(s) for s in lhs_list) if lhs_list else 0
+        for (i, slot), s in zip(enumerate(info["cdf"], 1), lhs_list):
+            print(f"{s:<{pad}}  -> CDF: {slot['covered_frac']*100:0.2f}% ({slot['covered_count']} / {denom})")
 
-    for (i, slot), s in zip(enumerate(info["cdf"], 1), lhs_list):
-        print(f"{s:<{pad}}  -> CDF: {slot['covered_frac']*100:0.2f}% ({slot['covered_count']} / {denom})")
-
-    # show swap alternatives if they exist
     if info.get("swap_alternatives"):
         print("\nIf a selected slot is unavailable, suggested replacements:")
-        for i, alternatives in enumerate(info["swap_alternatives"], 1):
-            if not alternatives:
-                continue
-            print(f"  For slot {i}:")
-            for alt in alternatives:
-                alt_hr, alt_suf = _fmt_noon_anchored(alt["hour_raw"])
-                delta = alt["delta_vs_current"]
-                delta_str = f"{delta:+d}" if isinstance(delta, int) else f"{delta:+.0f}"
-                print(
-                    f"    {alt['day']} @ {alt_hr}{alt_suf} "
-                    f"(gain {alt['marginal_gain']}, total {alt['total_avail']}, "
-                    f"coverage {alt['coverage_if_swapped']}/{denom}, delta {delta_str})"
-                )
+        if use_table:
+            rows = []
+            for slot_idx, alternatives in enumerate(info["swap_alternatives"], 1):
+                if not alternatives:
+                    continue
+                selected = info["selected_slots"][slot_idx - 1]
+                sel_hr, sel_suf = _fmt_noon_anchored(selected["hour_raw"])
+                slot_label = f"{selected['day']} @ {sel_hr}{sel_suf}"
+                first = True
+                for alt in alternatives:
+                    alt_hr, alt_suf = _fmt_noon_anchored(alt["hour_raw"])
+                    delta = alt["delta_vs_current"]
+                    delta_str = f"{delta:+d}" if isinstance(delta, int) else f"{delta:+.0f}"
+                    rows.append([
+                        slot_label if first else "",
+                        alt["day"],
+                        f"{alt_hr}{alt_suf}",
+                        str(alt["marginal_gain"]),
+                        str(alt["total_avail"]),
+                        f"{alt['coverage_if_swapped']}/{denom}",
+                        delta_str,
+                    ])
+                    first = False
+            _print_table(["If Unavailable", "Day", "Time", "Gain", "Total", "Coverage", "Delta"], rows)
+        else:
+            for slot_idx, alternatives in enumerate(info["swap_alternatives"], 1):
+                if not alternatives:
+                    continue
+                if slot_idx > 1:
+                    print()
+                for alt in alternatives:
+                    alt_hr, alt_suf = _fmt_noon_anchored(alt["hour_raw"])
+                    delta = alt["delta_vs_current"]
+                    delta_str = f"{delta:+d}" if isinstance(delta, int) else f"{delta:+.0f}"
+                    print(
+                        f"  Slot {slot_idx}: {alt['day']} @ {alt_hr}{alt_suf} "
+                        f"(gain {alt['marginal_gain']}, total {alt['total_avail']}, "
+                        f"coverage {alt['coverage_if_swapped']}/{denom}, delta {delta_str})"
+                    )
 
-    # show additional weighted suggestions after target coverage achieved
     if info.get("additional_suggestions"):
         target_pct = info["target_coverage_factor"] * 100
         print(f"\nExtra suggestions (weighted toward under-represented students) after {target_pct:.0f}% coverage:")
+        rows = []
         for i, sugg in enumerate(info["additional_suggestions"], 1):
             sugg_hr, sugg_suf = _fmt_noon_anchored(sugg["hour_raw"])
-            print(
-                f"  {i}. {sugg['day']} @ {sugg_hr}{sugg_suf} "
-                f"(weighted score {sugg['weighted_score']:.2f}, {sugg['total_avail']} total)"
-            )
+            rows.append([
+                str(i),
+                sugg["day"],
+                f"{sugg_hr}{sugg_suf}",
+                f"{sugg['weighted_score']:.2f}",
+                str(sugg["total_avail"]),
+            ])
+        if use_table:
+            _print_table(["#", "Day", "Time", "Weighted", "Total"], rows)
+        else:
+            for row in rows:
+                print(f"  {row[0]}. {row[1]} @ {row[2]} (weighted {row[3]}, {row[4]} total)")
 
 
 def main():
@@ -524,6 +584,7 @@ def main():
     ap.add_argument("--coverage", type=float, default=1.0, help="Target coverage factor (0..1)")
     ap.add_argument("--show-alternatives", type=int, default=0, help="Show N replacement options if a selected slot is unavailable")
     ap.add_argument("--suggest-after-100", type=int, default=0, help="After hitting target coverage, suggest N additional optimal time slots")
+    ap.add_argument("--table", action="store_true", help="Render report as tables")
     args = ap.parse_args()
 
     slots, students, _, _ = load_slots(args.source)
@@ -534,7 +595,7 @@ def main():
     # so students here should be the full list; we recompute exclusion by using avail sets union:
     nonzero_students = sorted(set().union(*[s.avail for s in slots]))
     info = greedy_select(slots, nonzero_students, args.max_hours, args.coverage, args.show_alternatives, args.suggest_after_100)
-    print_report(info)
+    print_report(info, use_table=args.table)
 
 
 if __name__ == "__main__":
