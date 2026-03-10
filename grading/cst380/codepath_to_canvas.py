@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import inspect
 import sys
 import unicodedata
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from lms_interface.canvas_interface import CanvasInterface
 import yaml
@@ -15,6 +18,7 @@ from thefuzz import process
 
 
 POINTS_POSSIBLE_LABEL = "    Points Possible"
+LOS_ANGELES = ZoneInfo("America/Los_Angeles")
 
 
 @dataclass(frozen=True)
@@ -45,6 +49,14 @@ class ScoreBreakdown:
   stretch_earned: float
   weighted_total: float
   canvas_score: float
+
+
+@dataclass(frozen=True)
+class SubmissionDecision:
+  action: str
+  due_at: datetime | None
+  submitted_at: datetime | None = None
+  seconds_late: int | None = None
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -138,6 +150,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     "--prod",
     action="store_true",
     help="Push grades to Canvas prod. Default behavior uses Canvas dev.",
+  )
+  parser.add_argument(
+    "--strict-deadlines",
+    action="store_true",
+    help="Use CodePath Updated instead of Submitted for deadline comparison when both exist.",
   )
   args = parser.parse_args(argv)
 
@@ -542,6 +559,9 @@ def build_feedback_text(
   row: dict[str, str],
   config: ScoreConfig,
   breakdown: ScoreBreakdown | None,
+  *,
+  submitted_at: datetime | None = None,
+  seconds_late: int | None = None,
 ) -> str:
   status = row["Status"].strip()
   status_lower = status.lower()
@@ -567,7 +587,196 @@ def build_feedback_text(
   ])
   if config.ignore_points:
     lines.append(f"Ignored top-end CodePath points: {format_score(config.ignore_points)}")
+  if submitted_at is not None:
+    lines.append(f"CodePath deadline timestamp used: {submitted_at.isoformat()}")
+  if seconds_late is not None:
+    lines.append(f"Canvas late penalty seconds: {seconds_late}")
   return "\n".join(lines)
+
+
+def normalize_canvas_datetime(value) -> datetime | None:
+  if value is None:
+    return None
+  if isinstance(value, datetime):
+    if value.tzinfo is None:
+      return value.replace(tzinfo=LOS_ANGELES)
+    return value
+  text = str(value).strip()
+  if not text:
+    return None
+  if text.endswith("Z"):
+    text = text[:-1] + "+00:00"
+  parsed = datetime.fromisoformat(text)
+  if parsed.tzinfo is None:
+    return parsed.replace(tzinfo=LOS_ANGELES)
+  return parsed
+
+
+def parse_codepath_timestamp(
+  value: str,
+  *,
+  reference_due_at: datetime | None = None,
+) -> datetime | None:
+  cleaned = (value or "").strip()
+  if not cleaned or cleaned == "---":
+    return None
+
+  date_part, time_part = cleaned.split(" at ", 1)
+  time_part = time_part.rsplit(" ", 1)[0]
+  year = reference_due_at.astimezone(LOS_ANGELES).year if reference_due_at else datetime.now(LOS_ANGELES).year
+  parsed = datetime.strptime(f"{year}/{date_part} {time_part}", "%Y/%m/%d %I:%M%p")
+  localized = parsed.replace(tzinfo=LOS_ANGELES)
+
+  if reference_due_at is not None:
+    local_due = reference_due_at.astimezone(LOS_ANGELES)
+    if (localized - local_due).days > 180:
+      localized = localized.replace(year=localized.year - 1)
+    elif (local_due - localized).days > 180:
+      localized = localized.replace(year=localized.year + 1)
+
+  return localized
+
+
+def get_effective_submission_time(
+  row: dict[str, str],
+  *,
+  reference_due_at: datetime | None = None,
+  strict_deadlines: bool = False,
+) -> datetime | None:
+  submitted_at = parse_codepath_timestamp(row.get("Submitted", ""), reference_due_at=reference_due_at)
+  if submitted_at is None:
+    return None
+  if strict_deadlines:
+    updated_at = parse_codepath_timestamp(row.get("Updated", ""), reference_due_at=reference_due_at)
+    if updated_at is not None:
+      return updated_at
+  return submitted_at
+
+
+def compute_seconds_late(
+  row: dict[str, str],
+  *,
+  due_at,
+  strict_deadlines: bool = False,
+) -> tuple[datetime | None, int | None]:
+  normalized_due_at = normalize_canvas_datetime(due_at)
+  if normalized_due_at is None:
+    return None, None
+
+  submitted_at = get_effective_submission_time(
+    row,
+    reference_due_at=normalized_due_at,
+    strict_deadlines=strict_deadlines,
+  )
+  if submitted_at is None:
+    return None, None
+
+  seconds_late = max(0, int((submitted_at - normalized_due_at).total_seconds()))
+  return submitted_at, seconds_late
+
+
+def resolve_canvas_submission_due_at(canvas_assignment, submission) -> datetime | None:
+  if submission is not None:
+    for value in (
+      getattr(submission, "cached_due_date", None),
+      getattr(submission, "due_at", None),
+    ):
+      normalized = normalize_canvas_datetime(value)
+      if normalized is not None:
+        return normalized
+
+    submission_assignment = getattr(submission, "assignment", None)
+    if isinstance(submission_assignment, dict):
+      normalized = normalize_canvas_datetime(submission_assignment.get("due_at"))
+      if normalized is not None:
+        return normalized
+    elif submission_assignment is not None:
+      normalized = normalize_canvas_datetime(getattr(submission_assignment, "due_at", None))
+      if normalized is not None:
+        return normalized
+
+  return normalize_canvas_datetime(getattr(canvas_assignment, "due_at", None))
+
+
+def canvas_submission_has_content(submission) -> bool:
+  if submission is None:
+    return False
+
+  submitted_at = getattr(submission, "submitted_at", None)
+  if isinstance(submitted_at, str):
+    if submitted_at.strip():
+      return True
+  elif submitted_at is not None:
+    return True
+
+  submission_type = str(getattr(submission, "submission_type", "") or "").strip().lower()
+  if submission_type and submission_type not in {"none", "on_paper", "not_graded"}:
+    return True
+
+  attachments = getattr(submission, "attachments", None)
+  if isinstance(attachments, list) and attachments:
+    return True
+
+  for attr_name in ("body", "url"):
+    value = getattr(submission, attr_name, None)
+    if isinstance(value, str) and value.strip():
+      return True
+
+  media_comment_id = getattr(submission, "media_comment_id", None)
+  if media_comment_id not in (None, "", 0):
+    return True
+
+  return False
+
+
+def canvas_submission_is_excused(submission) -> bool:
+  return bool(getattr(submission, "excused", False)) if submission is not None else False
+
+
+def canvas_submission_is_missing_candidate(
+  submission,
+  *,
+  due_at: datetime | None,
+  now: datetime,
+) -> bool:
+  if submission is None:
+    return False
+  if due_at is None or due_at > now:
+    return False
+  if canvas_submission_is_excused(submission):
+    return False
+  return not canvas_submission_has_content(submission)
+
+
+def decide_submission_action(
+  *,
+  codepath_row: dict[str, str] | None,
+  canvas_assignment,
+  submission,
+  strict_deadlines: bool,
+  now: datetime,
+) -> SubmissionDecision:
+  due_at = resolve_canvas_submission_due_at(canvas_assignment, submission)
+  if codepath_row is not None:
+    submitted_at, seconds_late = compute_seconds_late(
+      codepath_row,
+      due_at=due_at,
+      strict_deadlines=strict_deadlines,
+    )
+    if submitted_at is not None:
+      return SubmissionDecision(
+        action="push_grade",
+        due_at=due_at,
+        submitted_at=submitted_at,
+        seconds_late=seconds_late,
+      )
+    if canvas_submission_is_missing_candidate(submission, due_at=due_at, now=now):
+      return SubmissionDecision(action="mark_missing", due_at=due_at)
+    return SubmissionDecision(action="skip", due_at=due_at)
+
+  if canvas_submission_is_missing_candidate(submission, due_at=due_at, now=now):
+    return SubmissionDecision(action="mark_missing", due_at=due_at)
+  return SubmissionDecision(action="skip", due_at=due_at)
 
 
 def write_suggestions(path: Path, suggestions: dict[str, list[MatchSuggestion]]) -> None:
@@ -849,6 +1058,28 @@ def get_canvas_roster_rows_from_course(course) -> list[dict[str, str]]:
   ]
 
 
+def push_feedback_accepts_seconds_late(canvas_assignment) -> bool:
+  try:
+    signature = inspect.signature(canvas_assignment.push_feedback)
+  except (TypeError, ValueError):
+    return False
+  if "seconds_late" in signature.parameters:
+    return True
+  return any(
+    parameter.kind is inspect.Parameter.VAR_KEYWORD
+    for parameter in signature.parameters.values()
+  )
+
+
+def mark_canvas_submission_missing(canvas_assignment, user_id: int) -> bool:
+  try:
+    submission = canvas_assignment.get_submission(user_id)
+    submission.edit(submission={"late_policy_status": "missing"})
+  except Exception:
+    return False
+  return True
+
+
 def run_single_push_conversion(
   args: argparse.Namespace,
   codepath_path: Path,
@@ -974,20 +1205,55 @@ def run_single_push_conversion(
     return 0
 
   codepath_by_name = {get_codepath_name(row): row for row in codepath_rows}
-  roster_by_name = {row["Student"]: row for row in roster_rows}
+  codepath_by_canvas_name = {
+    canvas_name: codepath_by_name[codepath_name]
+    for codepath_name, canvas_name in resolved_matches.items()
+  }
   pushed_count = 0
+  marked_missing_count = 0
   skipped_blank_count = 0
+  skipped_no_action_count = 0
   failed_push_count = 0
+  now = datetime.now(LOS_ANGELES)
 
-  for codepath_name, canvas_name in resolved_matches.items():
-    roster_row = roster_by_name[canvas_name]
+  for roster_row in roster_rows:
+    canvas_name = roster_row["Student"]
     user_id_text = str(roster_row.get("ID", "")).strip()
     if not user_id_text:
       print(f"Missing Canvas user ID for {canvas_name}.", file=sys.stderr)
       failed_push_count += 1
       continue
 
-    codepath_row = codepath_by_name[codepath_name]
+    user_id = int(user_id_text)
+    try:
+      submission = canvas_assignment.get_submission(user_id)
+    except Exception:
+      print(f"Could not fetch Canvas submission for {canvas_name}.", file=sys.stderr)
+      failed_push_count += 1
+      continue
+
+    codepath_row = codepath_by_canvas_name.get(canvas_name)
+    decision = decide_submission_action(
+      codepath_row=codepath_row,
+      canvas_assignment=canvas_assignment,
+      submission=submission,
+      strict_deadlines=args.strict_deadlines,
+      now=now,
+    )
+
+    if decision.action == "mark_missing":
+      if mark_canvas_submission_missing(canvas_assignment, user_id):
+        marked_missing_count += 1
+      else:
+        failed_push_count += 1
+      continue
+    if decision.action == "skip":
+      skipped_no_action_count += 1
+      continue
+    if codepath_row is None:
+      skipped_no_action_count += 1
+      continue
+
     score = compute_canvas_score(
       codepath_row,
       config=config,
@@ -999,13 +1265,24 @@ def run_single_push_conversion(
       continue
 
     breakdown = build_score_breakdown(float(codepath_row["Feature Score"]), config)
-    feedback_text = build_feedback_text(codepath_row, config, breakdown)
+    feedback_text = build_feedback_text(
+      codepath_row,
+      config,
+      breakdown,
+      submitted_at=decision.submitted_at,
+      seconds_late=decision.seconds_late,
+    )
+    push_kwargs = {
+      "user_id": user_id,
+      "score": score,
+      "comments": feedback_text,
+      "keep_previous_best": True,
+      "clobber_feedback": False,
+    }
+    if decision.seconds_late is not None and push_feedback_accepts_seconds_late(canvas_assignment):
+      push_kwargs["seconds_late"] = decision.seconds_late
     pushed = canvas_assignment.push_feedback(
-      user_id=int(user_id_text),
-      score=score,
-      comments=feedback_text,
-      keep_previous_best=True,
-      clobber_feedback=False,
+      **push_kwargs,
     )
     if pushed:
       pushed_count += 1
@@ -1016,7 +1293,9 @@ def run_single_push_conversion(
     print(f"Warning: {warning}", file=sys.stderr)
 
   print(f"Pushed {pushed_count} grade(s) to Canvas for {assignment_name}")
+  print(f"Marked missing submissions: {marked_missing_count}")
   print(f"Skipped blank scores: {skipped_blank_count}")
+  print(f"Skipped with no action: {skipped_no_action_count}")
   print(f"Push failures: {failed_push_count}")
   return 1 if failed_push_count else 0
 

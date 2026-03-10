@@ -1,9 +1,11 @@
 import csv
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 import os
+from zoneinfo import ZoneInfo
 
 import yaml
 
@@ -75,6 +77,52 @@ class CodePathToCanvasTests(unittest.TestCase):
     self.assertEqual(suggested, {})
     self.assertIn("Missing Student", unresolved)
     self.assertEqual(warnings, [])
+
+  def test_compute_seconds_late_defaults_to_submitted_timestamp(self) -> None:
+    submitted_at, seconds_late = codepath_to_canvas.compute_seconds_late(
+      {
+        "Submitted": "3/10 at 12:30pm PDT",
+        "Updated": "3/10 at 1:30pm PDT",
+      },
+      due_at=datetime(2026, 3, 10, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles")),
+    )
+
+    self.assertIsNotNone(submitted_at)
+    self.assertEqual(
+      submitted_at,
+      datetime(2026, 3, 10, 12, 30, tzinfo=ZoneInfo("America/Los_Angeles")),
+    )
+    self.assertEqual(seconds_late, 1800)
+
+  def test_compute_seconds_late_uses_updated_timestamp_in_strict_mode(self) -> None:
+    submitted_at, seconds_late = codepath_to_canvas.compute_seconds_late(
+      {
+        "Submitted": "3/10 at 12:30pm PDT",
+        "Updated": "3/10 at 1:30pm PDT",
+      },
+      due_at=datetime(2026, 3, 10, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles")),
+      strict_deadlines=True,
+    )
+
+    self.assertIsNotNone(submitted_at)
+    self.assertEqual(
+      submitted_at,
+      datetime(2026, 3, 10, 13, 30, tzinfo=ZoneInfo("America/Los_Angeles")),
+    )
+    self.assertEqual(seconds_late, 5400)
+
+  def test_compute_seconds_late_requires_submitted_timestamp(self) -> None:
+    submitted_at, seconds_late = codepath_to_canvas.compute_seconds_late(
+      {
+        "Submitted": "",
+        "Updated": "3/10 at 1:30pm PDT",
+      },
+      due_at=datetime(2026, 3, 10, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles")),
+      strict_deadlines=True,
+    )
+
+    self.assertIsNone(submitted_at)
+    self.assertIsNone(seconds_late)
 
   def test_save_name_map_marks_suggestions_separately(self) -> None:
     with tempfile.TemporaryDirectory() as tempdir:
@@ -391,16 +439,280 @@ class CodePathToCanvasTests(unittest.TestCase):
         self.name = name
         self.user_id = user_id
 
+    class FakeSubmission:
+      def __init__(self):
+        self.submitted_at = "2026-03-10T12:00:00-07:00"
+        self.submission_type = "online_upload"
+        self.excused = False
+        self.attachments = []
+        self.body = ""
+        self.url = ""
+        self.media_comment_id = None
+
+      def edit(self, **kwargs):
+        return True
+
     class FakeAssignment:
       def __init__(self):
         self.id = 575119
         self.name = "Project 1"
         self.points_possible = 100
+        self.due_at = datetime(2026, 3, 10, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
         self.pushes: list[dict[str, object]] = []
+        self.submission = FakeSubmission()
 
       def push_feedback(self, **kwargs):
         self.pushes.append(kwargs)
         return True
+
+      def get_submission(self, user_id: int):
+        return self.submission
+
+    class FakeCourse:
+      def __init__(self):
+        self.assignment = FakeAssignment()
+
+      def get_students(self, include_names: bool = False):
+        return [FakeStudent("Jacobs, Samuel", 3)]
+
+      def get_assignment(self, assignment_id: int):
+        self.assignment.id = assignment_id
+        return self.assignment
+
+    class FakeCanvasInterface:
+      last_instance = None
+
+      def __init__(self, *args, **kwargs):
+        self.kwargs = kwargs
+        self.course = FakeCourse()
+        FakeCanvasInterface.last_instance = self
+
+      def get_course(self, course_id: int):
+        self.course.course_id = course_id
+        return self.course
+
+    with tempfile.TemporaryDirectory() as tempdir:
+      root = Path(tempdir)
+      assignments_yaml = root / "assignments.yaml"
+      name_map = root / "name_map.yaml"
+      codepath_csv = root / "codepath-unit1.csv"
+
+      assignments_yaml.write_text(
+        yaml.safe_dump(
+          {
+            "course-id": 32639,
+            "unit1": {
+              "assignment-id": 575119,
+              "base": 10,
+              "stretch": 10,
+              "ignore": 0,
+            }
+          }
+        ),
+        encoding="utf-8",
+      )
+      name_map.write_text(
+        yaml.safe_dump({"CONFIRMED": {"Jacobs, Samuel": ["Sam Jacobs"]}}),
+        encoding="utf-8",
+      )
+      self.write_codepath_csv(
+        codepath_csv,
+        [
+          {
+            "First Name": "Sam",
+            "Last Name": "Jacobs",
+            "Github Username": "sj",
+            "Hours Spent": "1",
+            "Submitted": "3/10 at 12:30pm PDT",
+            "Updated": "",
+            "Feature Score": "14",
+            "Status": "Complete",
+            "Assigned Grader": "",
+            "Graded At": "",
+            "Submission URL": "",
+            "Notes": "",
+          },
+        ],
+      )
+
+      with mock.patch.object(codepath_to_canvas, "CanvasInterface", FakeCanvasInterface):
+        exit_code = codepath_to_canvas.main(
+          [
+            "--assignments",
+            str(assignments_yaml),
+            "--data-dir",
+            str(root),
+            "--name-map",
+            str(name_map),
+            "--stretch-weight",
+            "0.5",
+          ]
+        )
+
+      self.assertEqual(exit_code, 0)
+      fake_interface = FakeCanvasInterface.last_instance
+      self.assertIsNotNone(fake_interface)
+      self.assertEqual(fake_interface.kwargs["prod"], False)
+      self.assertEqual(fake_interface.kwargs["privacy_mode"], "none")
+      self.assertEqual(fake_interface.course.assignment.pushes[0]["user_id"], 3)
+      self.assertEqual(fake_interface.course.assignment.pushes[0]["score"], 80)
+      self.assertEqual(fake_interface.course.assignment.pushes[0]["seconds_late"], 1800)
+      self.assertIn("Base points:", fake_interface.course.assignment.pushes[0]["comments"])
+      self.assertIn("Stretch points:", fake_interface.course.assignment.pushes[0]["comments"])
+
+  def test_batch_push_uses_updated_timestamp_when_strict_deadlines_enabled(self) -> None:
+    class FakeStudent:
+      def __init__(self, name: str, user_id: int):
+        self.name = name
+        self.user_id = user_id
+
+    class FakeSubmission:
+      def __init__(self):
+        self.submitted_at = "2026-03-10T12:00:00-07:00"
+        self.submission_type = "online_upload"
+        self.excused = False
+        self.attachments = []
+        self.body = ""
+        self.url = ""
+        self.media_comment_id = None
+
+      def edit(self, **kwargs):
+        return True
+
+    class FakeAssignment:
+      def __init__(self):
+        self.id = 575119
+        self.name = "Project 1"
+        self.points_possible = 100
+        self.due_at = datetime(2026, 3, 10, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        self.pushes: list[dict[str, object]] = []
+        self.submission = FakeSubmission()
+
+      def push_feedback(self, **kwargs):
+        self.pushes.append(kwargs)
+        return True
+
+      def get_submission(self, user_id: int):
+        return self.submission
+
+    class FakeCourse:
+      def __init__(self):
+        self.assignment = FakeAssignment()
+
+      def get_students(self, include_names: bool = False):
+        return [FakeStudent("Jacobs, Samuel", 3)]
+
+      def get_assignment(self, assignment_id: int):
+        self.assignment.id = assignment_id
+        return self.assignment
+
+    class FakeCanvasInterface:
+      last_instance = None
+
+      def __init__(self, *args, **kwargs):
+        self.kwargs = kwargs
+        self.course = FakeCourse()
+        FakeCanvasInterface.last_instance = self
+
+      def get_course(self, course_id: int):
+        self.course.course_id = course_id
+        return self.course
+
+    with tempfile.TemporaryDirectory() as tempdir:
+      root = Path(tempdir)
+      assignments_yaml = root / "assignments.yaml"
+      name_map = root / "name_map.yaml"
+      codepath_csv = root / "codepath-unit1.csv"
+
+      assignments_yaml.write_text(
+        yaml.safe_dump(
+          {
+            "course-id": 32639,
+            "unit1": {
+              "assignment-id": 575119,
+              "base": 10,
+              "stretch": 10,
+              "ignore": 0,
+            }
+          }
+        ),
+        encoding="utf-8",
+      )
+      name_map.write_text(
+        yaml.safe_dump({"CONFIRMED": {"Jacobs, Samuel": ["Sam Jacobs"]}}),
+        encoding="utf-8",
+      )
+      self.write_codepath_csv(
+        codepath_csv,
+        [
+          {
+            "First Name": "Sam",
+            "Last Name": "Jacobs",
+            "Github Username": "sj",
+            "Hours Spent": "1",
+            "Submitted": "3/10 at 12:30pm PDT",
+            "Updated": "3/10 at 1:30pm PDT",
+            "Feature Score": "14",
+            "Status": "Complete",
+            "Assigned Grader": "",
+            "Graded At": "",
+            "Submission URL": "",
+            "Notes": "",
+          },
+        ],
+      )
+
+      with mock.patch.object(codepath_to_canvas, "CanvasInterface", FakeCanvasInterface):
+        exit_code = codepath_to_canvas.main(
+          [
+            "--assignments",
+            str(assignments_yaml),
+            "--data-dir",
+            str(root),
+            "--name-map",
+            str(name_map),
+            "--strict-deadlines",
+          ]
+        )
+
+      self.assertEqual(exit_code, 0)
+      fake_interface = FakeCanvasInterface.last_instance
+      self.assertIsNotNone(fake_interface)
+      self.assertEqual(fake_interface.course.assignment.pushes[0]["seconds_late"], 5400)
+      self.assertIn(
+        "CodePath deadline timestamp used: 2026-03-10T13:30:00-07:00",
+        fake_interface.course.assignment.pushes[0]["comments"],
+      )
+
+  def test_batch_push_marks_submission_missing_when_submitted_timestamp_is_absent(self) -> None:
+    class FakeStudent:
+      def __init__(self, name: str, user_id: int):
+        self.name = name
+        self.user_id = user_id
+
+    class FakeSubmission:
+      def __init__(self):
+        self.edit_calls: list[dict[str, object]] = []
+
+      def edit(self, **kwargs):
+        self.edit_calls.append(kwargs)
+        return True
+
+    class FakeAssignment:
+      def __init__(self):
+        self.id = 575119
+        self.name = "Project 1"
+        self.points_possible = 100
+        self.due_at = datetime(2026, 3, 1, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        self.pushes: list[dict[str, object]] = []
+        self.submission = FakeSubmission()
+
+      def push_feedback(self, **kwargs):
+        self.pushes.append(kwargs)
+        return True
+
+      def get_submission(self, user_id: int):
+        return self.submission
 
     class FakeCourse:
       def __init__(self):
@@ -458,6 +770,138 @@ class CodePathToCanvasTests(unittest.TestCase):
             "Github Username": "sj",
             "Hours Spent": "1",
             "Submitted": "",
+            "Updated": "3/10 at 1:30pm PDT",
+            "Feature Score": "14",
+            "Status": "Complete",
+            "Assigned Grader": "",
+            "Graded At": "",
+            "Submission URL": "",
+            "Notes": "",
+          },
+        ],
+      )
+
+      with mock.patch.object(codepath_to_canvas, "CanvasInterface", FakeCanvasInterface):
+        exit_code = codepath_to_canvas.main(
+          [
+            "--assignments",
+            str(assignments_yaml),
+            "--data-dir",
+            str(root),
+            "--name-map",
+            str(name_map),
+            "--strict-deadlines",
+          ]
+        )
+
+      self.assertEqual(exit_code, 0)
+      fake_interface = FakeCanvasInterface.last_instance
+      self.assertIsNotNone(fake_interface)
+      self.assertEqual(fake_interface.course.assignment.pushes, [])
+      self.assertEqual(
+        fake_interface.course.assignment.submission.edit_calls,
+        [{"submission": {"late_policy_status": "missing"}}],
+      )
+
+  def test_batch_push_marks_canvas_only_student_missing_after_due_date(self) -> None:
+    class FakeStudent:
+      def __init__(self, name: str, user_id: int):
+        self.name = name
+        self.user_id = user_id
+
+    class FakeSubmission:
+      def __init__(self, *, submitted_at=None, submission_type="none", excused=False):
+        self.submitted_at = submitted_at
+        self.submission_type = submission_type
+        self.excused = excused
+        self.attachments = []
+        self.body = ""
+        self.url = ""
+        self.media_comment_id = None
+        self.edit_calls: list[dict[str, object]] = []
+
+      def edit(self, **kwargs):
+        self.edit_calls.append(kwargs)
+        return True
+
+    class FakeAssignment:
+      def __init__(self):
+        self.id = 575119
+        self.name = "Project 1"
+        self.points_possible = 100
+        self.due_at = datetime(2026, 3, 1, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        self.pushes: list[dict[str, object]] = []
+        self.submissions = {
+          3: FakeSubmission(submitted_at="2026-03-01T12:00:00-08:00", submission_type="online_upload"),
+          4: FakeSubmission(),
+        }
+
+      def push_feedback(self, **kwargs):
+        self.pushes.append(kwargs)
+        return True
+
+      def get_submission(self, user_id: int):
+        return self.submissions[user_id]
+
+    class FakeCourse:
+      def __init__(self):
+        self.assignment = FakeAssignment()
+
+      def get_students(self, include_names: bool = False):
+        return [
+          FakeStudent("Jacobs, Samuel", 3),
+          FakeStudent("Smith, John", 4),
+        ]
+
+      def get_assignment(self, assignment_id: int):
+        self.assignment.id = assignment_id
+        return self.assignment
+
+    class FakeCanvasInterface:
+      last_instance = None
+
+      def __init__(self, *args, **kwargs):
+        self.kwargs = kwargs
+        self.course = FakeCourse()
+        FakeCanvasInterface.last_instance = self
+
+      def get_course(self, course_id: int):
+        self.course.course_id = course_id
+        return self.course
+
+    with tempfile.TemporaryDirectory() as tempdir:
+      root = Path(tempdir)
+      assignments_yaml = root / "assignments.yaml"
+      name_map = root / "name_map.yaml"
+      codepath_csv = root / "codepath-unit1.csv"
+
+      assignments_yaml.write_text(
+        yaml.safe_dump(
+          {
+            "course-id": 32639,
+            "unit1": {
+              "assignment-id": 575119,
+              "base": 10,
+              "stretch": 10,
+              "ignore": 0,
+            }
+          }
+        ),
+        encoding="utf-8",
+      )
+      name_map.write_text(
+        yaml.safe_dump({"CONFIRMED": {"Jacobs, Samuel": ["Sam Jacobs"]}}),
+        encoding="utf-8",
+      )
+      self.write_codepath_csv(
+        codepath_csv,
+        [
+          {
+            "First Name": "Sam",
+            "Last Name": "Jacobs",
+            "Github Username": "sj",
+            "Hours Spent": "1",
+            "Submitted": "3/1 at 12:30pm PST",
             "Updated": "",
             "Feature Score": "14",
             "Status": "Complete",
@@ -478,20 +922,145 @@ class CodePathToCanvasTests(unittest.TestCase):
             str(root),
             "--name-map",
             str(name_map),
-            "--stretch-weight",
-            "0.5",
           ]
         )
 
       self.assertEqual(exit_code, 0)
       fake_interface = FakeCanvasInterface.last_instance
       self.assertIsNotNone(fake_interface)
-      self.assertEqual(fake_interface.kwargs["prod"], False)
-      self.assertEqual(fake_interface.kwargs["privacy_mode"], "none")
-      self.assertEqual(fake_interface.course.assignment.pushes[0]["user_id"], 3)
-      self.assertEqual(fake_interface.course.assignment.pushes[0]["score"], 80)
-      self.assertIn("Base points:", fake_interface.course.assignment.pushes[0]["comments"])
-      self.assertIn("Stretch points:", fake_interface.course.assignment.pushes[0]["comments"])
+      self.assertEqual(len(fake_interface.course.assignment.pushes), 1)
+      self.assertEqual(
+        fake_interface.course.assignment.submissions[4].edit_calls,
+        [{"submission": {"late_policy_status": "missing"}}],
+      )
+
+  def test_batch_push_does_not_mark_canvas_only_student_missing_when_canvas_has_submission(self) -> None:
+    class FakeStudent:
+      def __init__(self, name: str, user_id: int):
+        self.name = name
+        self.user_id = user_id
+
+    class FakeSubmission:
+      def __init__(self, *, submitted_at=None, submission_type="none", excused=False):
+        self.submitted_at = submitted_at
+        self.submission_type = submission_type
+        self.excused = excused
+        self.attachments = []
+        self.body = ""
+        self.url = ""
+        self.media_comment_id = None
+        self.edit_calls: list[dict[str, object]] = []
+
+      def edit(self, **kwargs):
+        self.edit_calls.append(kwargs)
+        return True
+
+    class FakeAssignment:
+      def __init__(self):
+        self.id = 575119
+        self.name = "Project 1"
+        self.points_possible = 100
+        self.due_at = datetime(2026, 3, 1, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        self.pushes: list[dict[str, object]] = []
+        self.submissions = {
+          3: FakeSubmission(submitted_at="2026-03-01T12:00:00-08:00", submission_type="online_upload"),
+          4: FakeSubmission(submitted_at="2026-03-01T11:45:00-08:00", submission_type="online_upload"),
+        }
+
+      def push_feedback(self, **kwargs):
+        self.pushes.append(kwargs)
+        return True
+
+      def get_submission(self, user_id: int):
+        return self.submissions[user_id]
+
+    class FakeCourse:
+      def __init__(self):
+        self.assignment = FakeAssignment()
+
+      def get_students(self, include_names: bool = False):
+        return [
+          FakeStudent("Jacobs, Samuel", 3),
+          FakeStudent("Smith, John", 4),
+        ]
+
+      def get_assignment(self, assignment_id: int):
+        self.assignment.id = assignment_id
+        return self.assignment
+
+    class FakeCanvasInterface:
+      last_instance = None
+
+      def __init__(self, *args, **kwargs):
+        self.kwargs = kwargs
+        self.course = FakeCourse()
+        FakeCanvasInterface.last_instance = self
+
+      def get_course(self, course_id: int):
+        self.course.course_id = course_id
+        return self.course
+
+    with tempfile.TemporaryDirectory() as tempdir:
+      root = Path(tempdir)
+      assignments_yaml = root / "assignments.yaml"
+      name_map = root / "name_map.yaml"
+      codepath_csv = root / "codepath-unit1.csv"
+
+      assignments_yaml.write_text(
+        yaml.safe_dump(
+          {
+            "course-id": 32639,
+            "unit1": {
+              "assignment-id": 575119,
+              "base": 10,
+              "stretch": 10,
+              "ignore": 0,
+            }
+          }
+        ),
+        encoding="utf-8",
+      )
+      name_map.write_text(
+        yaml.safe_dump({"CONFIRMED": {"Jacobs, Samuel": ["Sam Jacobs"]}}),
+        encoding="utf-8",
+      )
+      self.write_codepath_csv(
+        codepath_csv,
+        [
+          {
+            "First Name": "Sam",
+            "Last Name": "Jacobs",
+            "Github Username": "sj",
+            "Hours Spent": "1",
+            "Submitted": "3/1 at 12:30pm PST",
+            "Updated": "",
+            "Feature Score": "14",
+            "Status": "Complete",
+            "Assigned Grader": "",
+            "Graded At": "",
+            "Submission URL": "",
+            "Notes": "",
+          },
+        ],
+      )
+
+      with mock.patch.object(codepath_to_canvas, "CanvasInterface", FakeCanvasInterface):
+        exit_code = codepath_to_canvas.main(
+          [
+            "--assignments",
+            str(assignments_yaml),
+            "--data-dir",
+            str(root),
+            "--name-map",
+            str(name_map),
+          ]
+        )
+
+      self.assertEqual(exit_code, 0)
+      fake_interface = FakeCanvasInterface.last_instance
+      self.assertIsNotNone(fake_interface)
+      self.assertEqual(len(fake_interface.course.assignment.pushes), 1)
+      self.assertEqual(fake_interface.course.assignment.submissions[4].edit_calls, [])
 
   def test_batch_push_does_not_partially_push_when_preflight_fails(self) -> None:
     class FakeStudent:
