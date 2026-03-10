@@ -49,13 +49,12 @@ class ScoreBreakdown:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
   parser = argparse.ArgumentParser(
-    description="Convert CodePath feature scores into a Canvas grade import CSV."
+    description="Push CodePath grades to Canvas in batch using assignments.yaml."
   )
-  parser.add_argument("--in", dest="codepath_csv", help="CodePath CSV export")
-  parser.add_argument("--canvas", help="Canvas gradebook CSV export/template")
+  parser.add_argument("--in", dest="codepath_csv", help=argparse.SUPPRESS)
   parser.add_argument(
     "--out",
-    help="Output Canvas CSV to write. Defaults to overwriting --canvas in place.",
+    help=argparse.SUPPRESS,
   )
   parser.add_argument(
     "--assignments",
@@ -70,7 +69,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     action="append",
     help="Limit batch processing to one or more assignment keys from --assignments.",
   )
-  parser.add_argument("--assignment-column", help="Canvas assignment column to populate")
+  parser.add_argument("--canvas", help=argparse.SUPPRESS)
+  parser.add_argument("--assignment-column", help=argparse.SUPPRESS)
   parser.add_argument(
     "--name-map",
     default="name_map.yaml",
@@ -78,68 +78,71 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
   )
   parser.add_argument(
     "--write-suggestions",
-    help="Optional YAML file where unresolved match suggestions will be written",
+    help=argparse.SUPPRESS,
   )
   parser.add_argument(
     "--prompt-for-matches",
     action="store_true",
-    help="Prompt for unresolved name matches and save them back to --name-map",
+    help=argparse.SUPPRESS,
   )
-  parser.add_argument("--base-points", type=float)
-  parser.add_argument("--stretch-points", type=float)
+  parser.add_argument("--base-points", type=float, help=argparse.SUPPRESS)
+  parser.add_argument("--stretch-points", type=float, help=argparse.SUPPRESS)
   parser.add_argument(
     "--ignore-points",
     default=0.0,
     type=float,
-    help="Top-end CodePath points to ignore entirely before conversion",
+    help=argparse.SUPPRESS,
   )
   parser.add_argument(
     "--stretch-weight",
     type=float,
     default=0.5,
-    help="Value of each stretch point relative to a base point.",
+    help=argparse.SUPPRESS,
   )
   parser.add_argument(
     "--canvas-value",
     type=float,
     default=None,
-    help="Scale final scores to this Canvas assignment value. Defaults to the Points Possible row, or 100.",
+    help=argparse.SUPPRESS,
   )
   parser.add_argument(
     "--leave-not-graded-blank",
     action="store_true",
-    help='Leave "Not Graded" rows blank instead of forcing them to 0',
+    help=argparse.SUPPRESS,
   )
   parser.add_argument(
     "--missing-as-zero",
     action="store_true",
-    help="Treat missing feature scores as 0 instead of leaving them blank",
+    help=argparse.SUPPRESS,
   )
   parser.add_argument(
     "--auto-match-threshold",
     default=96,
     type=int,
-    help="Minimum fuzzy score for an automatic name match",
+    help=argparse.SUPPRESS,
   )
   parser.add_argument(
     "--auto-match-gap",
     default=4,
     type=int,
-    help="Required lead over the second-best fuzzy match for auto-match",
+    help=argparse.SUPPRESS,
   )
   parser.add_argument(
     "--suggestion-count",
     default=5,
     type=int,
-    help="How many candidate matches to keep per unresolved student",
+    help=argparse.SUPPRESS,
   )
-  parser.add_argument("--verbose", action="store_true")
+  parser.add_argument("--verbose", action="store_true", help=argparse.SUPPRESS)
   parser.add_argument(
     "--prod",
     action="store_true",
     help="Push grades to Canvas prod. Default behavior uses Canvas dev.",
   )
   args = parser.parse_args(argv)
+
+  if args.assignments and sys.stdin.isatty():
+    args.prompt_for_matches = True
 
   if args.stretch_weight < 0:
     parser.error("--stretch-weight must be non-negative.")
