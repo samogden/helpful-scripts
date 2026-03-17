@@ -1,4 +1,5 @@
 import csv
+import sys
 import tempfile
 import unittest
 from datetime import datetime
@@ -138,6 +139,47 @@ class CodePathToCanvasTests(unittest.TestCase):
       self.assertEqual(written_map["CONFIRMED"]["Jacobs, Samuel"], ["Sam Jacobs"])
       self.assertEqual(written_map["SUGGESTED"]["Smith, John"], ["Jon Smyth"])
       self.assertEqual(written_map["UNMATCHED"], ["Mystery Student"])
+
+  def test_load_gradebook_assignment_rows_does_not_require_max_row(self) -> None:
+    class FakeWorksheet:
+      def iter_rows(self, values_only: bool = False):
+        self.called_with_values_only = values_only
+        return iter([
+          ("ASN - 1 GRADEBOOK", None, None, None, None),
+          ("Coursework Type", "ASN", None, None, None),
+          ("Unit", 1, None, None, None),
+          ("Deadline", None, None, None, None),
+          (None, None, None, None, None),
+          ("OK", None, "Required Score", 10, None),
+          ("Member ID", "Github", "Status", "Full Name", "Feature Score", None, None, None, None, None, None, None, None, None, "Submitted", "Updated"),
+          (146762, "abplas", "Complete", "Abel Plascencia", "10", None, None, None, None, None, None, None, None, None, "2/16 at 12:55am PST", "---"),
+          (None, None, None, None, None),
+        ])
+
+    class FakeWorkbook:
+      sheetnames = ["ASN - 1"]
+
+      def __getitem__(self, name: str):
+        self.worksheet = FakeWorksheet()
+        return self.worksheet
+
+      def close(self):
+        return None
+
+    fake_workbook = FakeWorkbook()
+    fake_openpyxl = mock.Mock()
+    fake_openpyxl.load_workbook.return_value = fake_workbook
+
+    with mock.patch.dict(sys.modules, {"openpyxl": fake_openpyxl}):
+      rows, skip_message = codepath_to_canvas.load_gradebook_assignment_rows(
+        Path("Gradebook.xlsx"),
+        "ASN - 1",
+      )
+
+    self.assertIsNone(skip_message)
+    self.assertEqual(rows[0]["Member ID"], "146762")
+    self.assertEqual(rows[0]["Feature Score"], "10")
+    self.assertEqual(rows[0]["Submitted"], "2/16 at 12:55am PST")
 
   def test_main_writes_canvas_csv_and_name_map(self) -> None:
     with tempfile.TemporaryDirectory() as tempdir:
@@ -933,6 +975,125 @@ class CodePathToCanvasTests(unittest.TestCase):
         fake_interface.course.assignment.submissions[4].edit_calls,
         [{"submission": {"late_policy_status": "missing"}}],
       )
+
+  def test_batch_push_can_use_gradebook_workbook_rows(self) -> None:
+    class FakeStudent:
+      def __init__(self, name: str, user_id: int):
+        self.name = name
+        self.user_id = user_id
+
+    class FakeSubmission:
+      def __init__(self):
+        self.submitted_at = "2026-03-10T12:00:00-07:00"
+        self.submission_type = "online_upload"
+        self.excused = False
+        self.attachments = []
+        self.body = ""
+        self.url = ""
+        self.media_comment_id = None
+
+      def edit(self, **kwargs):
+        return True
+
+    class FakeAssignment:
+      def __init__(self):
+        self.id = 575119
+        self.name = "Project 1"
+        self.points_possible = 100
+        self.due_at = datetime(2026, 3, 10, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        self.pushes: list[dict[str, object]] = []
+        self.submission = FakeSubmission()
+
+      def push_feedback(self, **kwargs):
+        self.pushes.append(kwargs)
+        return True
+
+      def get_submission(self, user_id: int):
+        return self.submission
+
+    class FakeCourse:
+      def __init__(self):
+        self.assignment = FakeAssignment()
+
+      def get_students(self, include_names: bool = False):
+        return [FakeStudent("Jacobs, Samuel", 3)]
+
+      def get_assignment(self, assignment_id: int):
+        self.assignment.id = assignment_id
+        return self.assignment
+
+    class FakeCanvasInterface:
+      last_instance = None
+
+      def __init__(self, *args, **kwargs):
+        self.kwargs = kwargs
+        self.course = FakeCourse()
+        FakeCanvasInterface.last_instance = self
+
+      def get_course(self, course_id: int):
+        self.course.course_id = course_id
+        return self.course
+
+    with tempfile.TemporaryDirectory() as tempdir:
+      root = Path(tempdir)
+      assignments_yaml = root / "assignments.yaml"
+      name_map = root / "name_map.yaml"
+      fake_workbook = root / "Gradebook.xlsx"
+      fake_workbook.write_text("", encoding="utf-8")
+
+      assignments_yaml.write_text(
+        yaml.safe_dump(
+          {
+            "course-id": 32639,
+            "ASN - 1": {
+              "assignment-id": 575119,
+              "base": 10,
+              "stretch": 10,
+              "ignore": 0,
+            }
+          }
+        ),
+        encoding="utf-8",
+      )
+      name_map.write_text(
+        yaml.safe_dump({"CONFIRMED": {"Jacobs, Samuel": ["Sam Jacobs"]}}),
+        encoding="utf-8",
+      )
+
+      with (
+        mock.patch.object(codepath_to_canvas, "CanvasInterface", FakeCanvasInterface),
+        mock.patch.object(
+          codepath_to_canvas,
+          "load_gradebook_assignment_rows",
+          return_value=(
+            [
+              {
+                "Full Name": "Sam Jacobs",
+                "Status": "Complete",
+                "Feature Score": "14",
+                "Submitted": "3/10 at 12:30pm PDT",
+                "Updated": "",
+              }
+            ],
+            None,
+          ),
+        ),
+      ):
+        exit_code = codepath_to_canvas.main(
+          [
+            "--assignments",
+            str(assignments_yaml),
+            "--xls",
+            str(fake_workbook),
+            "--name-map",
+            str(name_map),
+          ]
+        )
+
+      self.assertEqual(exit_code, 0)
+      fake_interface = FakeCanvasInterface.last_instance
+      self.assertIsNotNone(fake_interface)
+      self.assertEqual(fake_interface.course.assignment.pushes[0]["score"], 80)
 
   def test_batch_push_does_not_mark_canvas_only_student_missing_when_canvas_has_submission(self) -> None:
     class FakeStudent:

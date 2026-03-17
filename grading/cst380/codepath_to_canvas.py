@@ -77,6 +77,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     help="Directory containing codepath-<assignment>.csv and canvas-<assignment>.csv files.",
   )
   parser.add_argument(
+    "--xls",
+    help="Gradebook workbook to use as the source of assignment rows, with sheets like 'ASN - 1'.",
+  )
+  parser.add_argument(
     "--only-assignment",
     action="append",
     help="Limit batch processing to one or more assignment keys from --assignments.",
@@ -165,11 +169,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.error("--stretch-weight must be non-negative.")
 
   single_mode = bool(args.codepath_csv or args.canvas)
-  batch_mode = bool(args.assignments or args.data_dir)
+  batch_mode = bool(args.assignments or args.data_dir or args.xls)
   if single_mode and batch_mode:
-    parser.error("Use either single-file mode (--in/--canvas) or batch mode (--assignments/--data-dir).")
+    parser.error("Use either single-file mode (--in/--canvas) or batch mode (--assignments with --data-dir or --xls).")
   if not single_mode and not batch_mode:
-    parser.error("Provide either --in/--canvas or --assignments/--data-dir.")
+    parser.error("Provide either --in/--canvas or --assignments with --data-dir or --xls.")
 
   if single_mode:
     if not args.codepath_csv or not args.canvas:
@@ -179,8 +183,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.base_points < 0 or args.stretch_points < 0 or args.ignore_points < 0:
       parser.error("Point values must be non-negative.")
   else:
-    if not args.assignments or not args.data_dir:
-      parser.error("Batch mode requires both --assignments and --data-dir.")
+    if not args.assignments or (not args.data_dir and not args.xls):
+      parser.error("Batch mode requires --assignments and either --data-dir or --xls.")
     if args.out:
       parser.error("--out is only supported in single-file mode.")
 
@@ -255,6 +259,136 @@ def read_codepath_rows(path: Path) -> list[dict[str, str]]:
     return list(reader)
 
 
+def normalize_sheet_text(value) -> str:
+  if value is None:
+    return ""
+  if isinstance(value, float) and value.is_integer():
+    return str(int(value))
+  return str(value).strip()
+
+
+def find_gradebook_workbook(data_dir: Path) -> Path | None:
+  candidate_dirs: list[Path] = [Path.cwd()]
+  if data_dir.is_dir() and data_dir != Path.cwd():
+    candidate_dirs.append(data_dir)
+  if data_dir.is_file() and data_dir.suffix.lower() == ".xlsx" and not data_dir.name.startswith("~$"):
+    return data_dir
+
+  candidates: list[Path] = []
+  for directory in candidate_dirs:
+    candidates.extend(
+      sorted(
+        path
+        for path in directory.glob("*.xlsx")
+        if not path.name.startswith("~$")
+      )
+    )
+
+  if not candidates:
+    return None
+
+  preferred = [path for path in candidates if "gradebook" in path.name.lower()]
+  if len(preferred) == 1:
+    return preferred[0]
+  if len(candidates) == 1:
+    return candidates[0]
+  raise ValueError(
+    "Found multiple XLSX files; keep a single gradebook workbook in the working directory or pass the workbook path as --data-dir."
+  )
+
+
+def load_gradebook_assignment_rows(
+  workbook_path: Path,
+  assignment_name: str,
+) -> tuple[list[dict[str, str]], str | None]:
+  try:
+    import openpyxl
+  except ModuleNotFoundError as exc:
+    raise ModuleNotFoundError(
+      "openpyxl is required to read the gradebook workbook. Install requirements.txt first."
+    ) from exc
+
+  workbook = openpyxl.load_workbook(workbook_path, data_only=True, read_only=True)
+  try:
+    if assignment_name not in workbook.sheetnames:
+      return [], f"Gradebook sheet {assignment_name!r} was not found in {workbook_path.name}."
+
+    worksheet = workbook[assignment_name]
+    row_iter = worksheet.iter_rows(values_only=True)
+    header_found = False
+    rows: list[dict[str, str]] = []
+    seen_data = False
+    empty_member_id_run = 0
+
+    for row_index, values in enumerate(row_iter, start=1):
+      padded = list(values[:16]) + [None] * max(0, 16 - len(values))
+      if not header_found:
+        if row_index > 20:
+          break
+        if (
+          normalize_sheet_text(padded[0]) == "Member ID"
+          and normalize_sheet_text(padded[3]) == "Full Name"
+          and normalize_sheet_text(padded[4]) == "Feature Score"
+        ):
+          header_found = True
+        continue
+
+      member_id = normalize_sheet_text(padded[0])
+      if not member_id:
+        if seen_data:
+          empty_member_id_run += 1
+          if empty_member_id_run >= 25:
+            break
+        continue
+
+      seen_data = True
+      empty_member_id_run = 0
+      row = {
+        "Member ID": member_id,
+        "Status": normalize_sheet_text(padded[2]),
+        "Full Name": normalize_sheet_text(padded[3]),
+        "Feature Score": normalize_sheet_text(padded[4]),
+        "Submitted": normalize_sheet_text(padded[14]),
+        "Updated": normalize_sheet_text(padded[15]),
+      }
+      if not row["Full Name"]:
+        continue
+      rows.append(row)
+
+    if not header_found:
+      raise ValueError(
+        f"Could not find the gradebook header row in sheet {assignment_name!r} of {workbook_path.name}."
+      )
+
+    if not rows:
+      return [], f"Gradebook sheet {assignment_name!r} contains no student rows yet."
+    return rows, None
+  finally:
+    workbook.close()
+
+
+def resolve_batch_assignment_input(
+  *,
+  assignment_name: str,
+  data_dir: Path,
+  gradebook_path: Path | None,
+  prefer_gradebook: bool = False,
+) -> tuple[Path | None, list[dict[str, str]] | None, str | None, str | None]:
+  if gradebook_path is not None:
+    if prefer_gradebook:
+      gradebook_rows, skip_message = load_gradebook_assignment_rows(gradebook_path, assignment_name)
+      return None, gradebook_rows, skip_message, None
+  codepath_path = data_dir / f"codepath-{assignment_name}.csv"
+  if codepath_path.exists():
+    return codepath_path, None, None, None
+
+  if gradebook_path is not None:
+    gradebook_rows, skip_message = load_gradebook_assignment_rows(gradebook_path, assignment_name)
+    return None, gradebook_rows, skip_message, None
+
+  return None, None, None, f"Missing CodePath CSV for {assignment_name}: expected {codepath_path.name}"
+
+
 def read_canvas_rows(path: Path) -> tuple[list[str], list[dict[str, str]]]:
   with path.open(newline="", encoding="utf-8-sig") as handle:
     reader = csv.DictReader(handle)
@@ -321,6 +455,9 @@ def save_name_map(
 
 
 def get_codepath_name(row: dict[str, str]) -> str:
+  full_name = row.get("Full Name", "").strip()
+  if full_name:
+    return full_name
   return f"{row['First Name'].strip()} {row['Last Name'].strip()}".strip()
 
 
@@ -822,13 +959,19 @@ def get_codepath_fieldnames(rows: list[dict[str, str]]) -> list[str]:
 def classify_codepath_export(rows: list[dict[str, str]]) -> tuple[bool, str | None]:
   fieldnames = set(get_codepath_fieldnames(rows))
   required_fields = {"First Name", "Last Name", "Feature Score", "Status"}
+  gradebook_fields = {"Full Name", "Feature Score", "Status"}
   if required_fields.issubset(fieldnames):
+    return True, None
+  if gradebook_fields.issubset(fieldnames):
     return True, None
 
   if fieldnames == {"Full Name"} or fieldnames == {"Full Name", None}:
     return False, "CodePath export only contains a roster and no grading columns yet."
 
-  missing = sorted(required_fields - fieldnames)
+  if "Full Name" in fieldnames:
+    missing = sorted(gradebook_fields - fieldnames)
+  else:
+    missing = sorted(required_fields - fieldnames)
   return False, f"CodePath export is missing required columns: {', '.join(missing)}"
 
 
@@ -1082,21 +1225,26 @@ def mark_canvas_submission_missing(canvas_assignment, user_id: int) -> bool:
 
 def run_single_push_conversion(
   args: argparse.Namespace,
-  codepath_path: Path,
+  codepath_path: Path | None,
   roster_rows: list[dict[str, str]],
   canvas_assignment,
   assignment_name: str,
   *,
+  codepath_rows: list[dict[str, str]] | None = None,
   push_enabled: bool = True,
 ) -> int:
   print(f"\n=== {assignment_name} ===")
-  codepath_rows = read_codepath_rows(codepath_path)
+  if codepath_rows is None:
+    if codepath_path is None:
+      raise ValueError("run_single_push_conversion requires either codepath_path or codepath_rows.")
+    codepath_rows = read_codepath_rows(codepath_path)
   codepath_valid, codepath_message = classify_codepath_export(codepath_rows)
   if not codepath_valid:
     if codepath_message == "CodePath export only contains a roster and no grading columns yet.":
       print(f"Skipping {assignment_name}: {codepath_message}")
       return 0
-    print(f"Cannot process {codepath_path}: {codepath_message}", file=sys.stderr)
+    source_label = str(codepath_path) if codepath_path is not None else assignment_name
+    print(f"Cannot process {source_label}: {codepath_message}", file=sys.stderr)
     return 1
 
   args = argparse.Namespace(**vars(args))
@@ -1303,30 +1451,48 @@ def run_single_push_conversion(
 def run_batch_conversion(args: argparse.Namespace) -> int:
   course_id, assignments = load_assignments_config(Path(args.assignments))
   selected_assignments = set(args.only_assignment or assignments.keys())
-  data_dir = Path(args.data_dir)
+  data_dir = Path(args.data_dir) if args.data_dir else Path.cwd()
+  explicit_xls = Path(args.xls) if args.xls else None
+  gradebook_path = explicit_xls or find_gradebook_workbook(data_dir)
   exit_code = 0
   push_mode = course_id is not None
   course = None
   roster_rows: list[dict[str, str]] | None = None
   args._name_map_cache = load_name_map(Path(args.name_map)) if args.name_map else {}
 
+  if explicit_xls is not None:
+    if not explicit_xls.exists():
+      raise ValueError(f"Workbook not found: {explicit_xls}")
+    if explicit_xls.suffix.lower() != ".xlsx":
+      raise ValueError(f"Workbook must be an .xlsx file: {explicit_xls}")
+  if explicit_xls is not None and not push_mode:
+    raise ValueError("--xls is only supported for Canvas push mode right now.")
+
   if push_mode:
     canvas_interface = CanvasInterface(prod=args.prod, privacy_mode="none")
     course = canvas_interface.get_course(int(course_id))
     roster_rows = get_canvas_roster_rows_from_course(course)
     print(f"Canvas target: {'PROD' if args.prod else 'DEV'}")
+    if explicit_xls is not None:
+      print(f"Workbook source: {explicit_xls}")
 
     preflight_failed = False
     for assignment_name, settings in assignments.items():
       if assignment_name not in selected_assignments:
         continue
+      print(f"Preflighting {assignment_name}...", flush=True)
 
-      codepath_path = data_dir / f"codepath-{assignment_name}.csv"
-      if not codepath_path.exists():
-        print(
-          f"Missing CodePath CSV for {assignment_name}: expected {codepath_path.name}",
-          file=sys.stderr,
-        )
+      codepath_path, codepath_rows, skip_message, missing_error = resolve_batch_assignment_input(
+        assignment_name=assignment_name,
+        data_dir=data_dir,
+        gradebook_path=gradebook_path,
+        prefer_gradebook=explicit_xls is not None,
+      )
+      if skip_message is not None:
+        print(f"Skipping {assignment_name}: {skip_message}")
+        continue
+      if missing_error is not None:
+        print(missing_error, file=sys.stderr)
         exit_code = 1
         preflight_failed = True
         continue
@@ -1350,6 +1516,7 @@ def run_batch_conversion(args: argparse.Namespace) -> int:
         roster_rows=roster_rows or [],
         canvas_assignment=canvas_assignment,
         assignment_name=assignment_name,
+        codepath_rows=codepath_rows,
         push_enabled=False,
       )
       if result != 0:
@@ -1363,16 +1530,24 @@ def run_batch_conversion(args: argparse.Namespace) -> int:
   for assignment_name, settings in assignments.items():
     if assignment_name not in selected_assignments:
       continue
+    if push_mode:
+      print(f"Pushing {assignment_name}...", flush=True)
 
-    codepath_path = data_dir / f"codepath-{assignment_name}.csv"
-    canvas_path = data_dir / f"canvas-{assignment_name}.csv"
-    if not codepath_path.exists():
-      print(
-        f"Missing CodePath CSV for {assignment_name}: expected {codepath_path.name}",
-        file=sys.stderr,
-      )
+    codepath_path, codepath_rows, skip_message, missing_error = resolve_batch_assignment_input(
+      assignment_name=assignment_name,
+      data_dir=data_dir,
+      gradebook_path=gradebook_path if push_mode else None,
+      prefer_gradebook=explicit_xls is not None,
+    )
+    if skip_message is not None:
+      print(f"Skipping {assignment_name}: {skip_message}")
+      continue
+    if missing_error is not None:
+      print(missing_error, file=sys.stderr)
       exit_code = 1
       continue
+
+    canvas_path = data_dir / f"canvas-{assignment_name}.csv"
 
     assignment_args = build_assignment_args(args, assignment_name, settings)
     if push_mode:
@@ -1384,9 +1559,17 @@ def run_batch_conversion(args: argparse.Namespace) -> int:
         roster_rows=roster_rows or [],
         canvas_assignment=canvas_assignment,
         assignment_name=assignment_name,
+        codepath_rows=codepath_rows,
         push_enabled=True,
       )
     else:
+      if codepath_path is None:
+        print(
+          f"Workbook-backed batch input is only supported for Canvas push mode right now ({assignment_name}).",
+          file=sys.stderr,
+        )
+        exit_code = 1
+        continue
       if not canvas_path.exists():
         print(
           f"Missing Canvas CSV for {assignment_name}: expected {canvas_path.name}",

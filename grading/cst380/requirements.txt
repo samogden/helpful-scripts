@@ -1,3 +1,4 @@
 PyYAML>=6.0
 thefuzz[speedup]>=0.22.1
 lms-interface @ git+https://github.com/OtterDen-Lab/LMSInterface.git@v0.5.2
+openpyxl>=3.1.5
