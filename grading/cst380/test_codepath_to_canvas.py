@@ -2,6 +2,8 @@ import csv
 import sys
 import tempfile
 import unittest
+import io
+import contextlib
 from datetime import datetime
 from pathlib import Path
 from unittest import mock
@@ -144,6 +146,28 @@ class CodePathToCanvasTests(unittest.TestCase):
     class FakeWorksheet:
       def iter_rows(self, values_only: bool = False):
         self.called_with_values_only = values_only
+        header = (
+          "Member ID",
+          "Github",
+          "Status",
+          "Full Name",
+          "Feature Score",
+          "Extra Col 1",
+          "Extra Col 2",
+          "Submitted",
+          "Updated",
+        )
+        student = (
+          146762,
+          "abplas",
+          "Complete",
+          "Abel Plascencia",
+          "10",
+          None,
+          None,
+          "2/16 at 12:55am PST",
+          "---",
+        )
         return iter([
           ("ASN - 1 GRADEBOOK", None, None, None, None),
           ("Coursework Type", "ASN", None, None, None),
@@ -151,8 +175,8 @@ class CodePathToCanvasTests(unittest.TestCase):
           ("Deadline", None, None, None, None),
           (None, None, None, None, None),
           ("OK", None, "Required Score", 10, None),
-          ("Member ID", "Github", "Status", "Full Name", "Feature Score", None, None, None, None, None, None, None, None, None, "Submitted", "Updated"),
-          (146762, "abplas", "Complete", "Abel Plascencia", "10", None, None, None, None, None, None, None, None, None, "2/16 at 12:55am PST", "---"),
+          header,
+          student,
           (None, None, None, None, None),
         ])
 
@@ -180,6 +204,58 @@ class CodePathToCanvasTests(unittest.TestCase):
     self.assertEqual(rows[0]["Member ID"], "146762")
     self.assertEqual(rows[0]["Feature Score"], "10")
     self.assertEqual(rows[0]["Submitted"], "2/16 at 12:55am PST")
+
+  def test_push_preflight_warns_about_unmatched_canvas_roster_students(self) -> None:
+    args = mock.Mock()
+    args.base_points = 10.0
+    args.stretch_points = 0.0
+    args.ignore_points = 0.0
+    args.stretch_weight = 0.5
+    args.canvas_value = None
+    args.name_map = "missing_name_map.yaml"
+    args.write_suggestions = None
+    args.auto_match_threshold = 100
+    args.auto_match_gap = 4
+    args.suggestion_count = 3
+    args.prompt_for_matches = False
+    args.verbose = False
+    args.strict_deadlines = False
+    args.missing_as_zero = False
+    args.leave_not_graded_blank = False
+
+    class FakeAssignment:
+      id = 123
+      name = "ASN - 1"
+      points_possible = 100
+
+    stderr = io.StringIO()
+    stdout = io.StringIO()
+    with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(stdout):
+      exit_code = codepath_to_canvas.run_single_push_conversion(
+        args=args,
+        codepath_path=None,
+        roster_rows=[
+          {"Student": "Alpha, Alice", "ID": "1"},
+          {"Student": "Beta, Bob", "ID": "2"},
+        ],
+        canvas_assignment=FakeAssignment(),
+        assignment_name="ASN - 1",
+        codepath_rows=[
+          {
+            "First Name": "Alice",
+            "Last Name": "Alpha",
+            "Feature Score": "10",
+            "Status": "Complete",
+            "Submitted": "3/10 at 12:00pm PDT",
+            "Updated": "3/10 at 12:00pm PDT",
+          },
+        ],
+        push_enabled=False,
+      )
+
+    self.assertEqual(exit_code, 0)
+    self.assertIn("Canvas roster student(s) have no CodePath match", stderr.getvalue())
+    self.assertIn("Beta, Bob", stderr.getvalue())
 
   def test_main_writes_canvas_csv_and_name_map(self) -> None:
     with tempfile.TemporaryDirectory() as tempdir:

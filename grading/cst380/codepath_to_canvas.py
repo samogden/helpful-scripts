@@ -316,24 +316,35 @@ def load_gradebook_assignment_rows(
     worksheet = workbook[assignment_name]
     row_iter = worksheet.iter_rows(values_only=True)
     header_found = False
+    header_indexes: dict[str, int] = {}
     rows: list[dict[str, str]] = []
     seen_data = False
     empty_member_id_run = 0
 
+    def get_value(values_row, header: str) -> str:
+      index = header_indexes.get(header)
+      if index is None or not values_row or index >= len(values_row):
+        return ""
+      return normalize_sheet_text(values_row[index])
+
     for row_index, values in enumerate(row_iter, start=1):
-      padded = list(values[:16]) + [None] * max(0, 16 - len(values))
       if not header_found:
         if row_index > 20:
           break
-        if (
-          normalize_sheet_text(padded[0]) == "Member ID"
-          and normalize_sheet_text(padded[3]) == "Full Name"
-          and normalize_sheet_text(padded[4]) == "Feature Score"
-        ):
+        normalized_headers = {
+          normalize_sheet_text(cell).strip().lower(): index
+          for index, cell in enumerate(values or ())
+          if normalize_sheet_text(cell).strip()
+        }
+        required = {"member id", "status", "full name", "feature score"}
+        if required.issubset(normalized_headers):
           header_found = True
+          header_indexes = dict(normalized_headers)
         continue
 
-      member_id = normalize_sheet_text(padded[0])
+      member_id_index = header_indexes.get("member id", 0)
+      member_id_value = values[member_id_index] if values and member_id_index < len(values) else None
+      member_id = normalize_sheet_text(member_id_value)
       if not member_id:
         if seen_data:
           empty_member_id_run += 1
@@ -345,11 +356,11 @@ def load_gradebook_assignment_rows(
       empty_member_id_run = 0
       row = {
         "Member ID": member_id,
-        "Status": normalize_sheet_text(padded[2]),
-        "Full Name": normalize_sheet_text(padded[3]),
-        "Feature Score": normalize_sheet_text(padded[4]),
-        "Submitted": normalize_sheet_text(padded[14]),
-        "Updated": normalize_sheet_text(padded[15]),
+        "Status": get_value(values, "status"),
+        "Full Name": get_value(values, "full name"),
+        "Feature Score": get_value(values, "feature score"),
+        "Submitted": get_value(values, "submitted"),
+        "Updated": get_value(values, "updated"),
       }
       if not row["Full Name"]:
         continue
@@ -1348,6 +1359,24 @@ def run_single_push_conversion(
     )
     return 1
 
+  matched_canvas_names = set(resolved_matches.values())
+  unmatched_canvas_names = sorted(set(canvas_students) - matched_canvas_names)
+  if unmatched_canvas_names:
+    print(
+      f"Warning: {len(unmatched_canvas_names)} Canvas roster student(s) have no CodePath match; skipping them.",
+      file=sys.stderr,
+    )
+    if args.verbose:
+      for canvas_name in unmatched_canvas_names:
+        print(f"  {canvas_name}", file=sys.stderr)
+    elif len(unmatched_canvas_names) <= 10:
+      for canvas_name in unmatched_canvas_names:
+        print(f"  {canvas_name}", file=sys.stderr)
+    else:
+      for canvas_name in unmatched_canvas_names[:10]:
+        print(f"  {canvas_name}", file=sys.stderr)
+      print("  (use --verbose to list all unmatched Canvas students)", file=sys.stderr)
+
   if not push_enabled:
     print(f"Preflight OK for {assignment_name}: {len(resolved_matches)} matched student(s)")
     return 0
@@ -1361,6 +1390,7 @@ def run_single_push_conversion(
   marked_missing_count = 0
   skipped_blank_count = 0
   skipped_no_action_count = 0
+  skipped_unmatched_canvas_count = 0
   failed_push_count = 0
   now = datetime.now(LOS_ANGELES)
 
@@ -1396,6 +1426,9 @@ def run_single_push_conversion(
         failed_push_count += 1
       continue
     if decision.action == "skip":
+      if codepath_row is None:
+        skipped_unmatched_canvas_count += 1
+        continue
       skipped_no_action_count += 1
       continue
     if codepath_row is None:
@@ -1444,6 +1477,7 @@ def run_single_push_conversion(
   print(f"Marked missing submissions: {marked_missing_count}")
   print(f"Skipped blank scores: {skipped_blank_count}")
   print(f"Skipped with no action: {skipped_no_action_count}")
+  print(f"Skipped unmatched Canvas roster students: {skipped_unmatched_canvas_count}")
   print(f"Push failures: {failed_push_count}")
   return 1 if failed_push_count else 0
 
