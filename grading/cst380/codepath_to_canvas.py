@@ -316,35 +316,43 @@ def load_gradebook_assignment_rows(
     worksheet = workbook[assignment_name]
     row_iter = worksheet.iter_rows(values_only=True)
     header_found = False
-    header_indexes: dict[str, int] = {}
+    header_indexes: dict[str, list[int]] = {}
     rows: list[dict[str, str]] = []
     seen_data = False
     empty_member_id_run = 0
 
     def get_value(values_row, header: str) -> str:
-      index = header_indexes.get(header)
-      if index is None or not values_row or index >= len(values_row):
+      indexes = header_indexes.get(header)
+      if not indexes or not values_row:
         return ""
-      return normalize_sheet_text(values_row[index])
+      first_value: str | None = None
+      for index in indexes:
+        if index >= len(values_row):
+          continue
+        candidate = normalize_sheet_text(values_row[index])
+        if first_value is None:
+          first_value = candidate
+        if candidate:
+          return candidate
+      return first_value or ""
 
     for row_index, values in enumerate(row_iter, start=1):
       if not header_found:
         if row_index > 20:
           break
-        normalized_headers = {
-          normalize_sheet_text(cell).strip().lower(): index
-          for index, cell in enumerate(values or ())
-          if normalize_sheet_text(cell).strip()
-        }
-        required = {"member id", "status", "full name", "feature score"}
-        if required.issubset(normalized_headers):
+        normalized_headers: dict[str, list[int]] = {}
+        for index, cell in enumerate(values or ()):
+          normalized = normalize_sheet_text(cell).strip().lower()
+          if not normalized:
+            continue
+          normalized_headers.setdefault(normalized, []).append(index)
+        required = {"member id", "status", "full name"}
+        if required.issubset(normalized_headers) and ("feature score" in normalized_headers or "score" in normalized_headers):
           header_found = True
           header_indexes = dict(normalized_headers)
         continue
 
-      member_id_index = header_indexes.get("member id", 0)
-      member_id_value = values[member_id_index] if values and member_id_index < len(values) else None
-      member_id = normalize_sheet_text(member_id_value)
+      member_id = get_value(values, "member id")
       if not member_id:
         if seen_data:
           empty_member_id_run += 1
@@ -358,7 +366,7 @@ def load_gradebook_assignment_rows(
         "Member ID": member_id,
         "Status": get_value(values, "status"),
         "Full Name": get_value(values, "full name"),
-        "Feature Score": get_value(values, "feature score"),
+        "Feature Score": get_value(values, "feature score") or get_value(values, "score"),
         "Submitted": get_value(values, "submitted"),
         "Updated": get_value(values, "updated"),
       }
@@ -1234,6 +1242,14 @@ def mark_canvas_submission_missing(canvas_assignment, user_id: int) -> bool:
   return True
 
 
+def clear_canvas_seconds_late_override(submission) -> bool:
+  try:
+    submission.edit(submission={"late_policy_status": "none", "seconds_late_override": 0})
+  except Exception:
+    return False
+  return True
+
+
 def run_single_push_conversion(
   args: argparse.Namespace,
   codepath_path: Path | None,
@@ -1466,6 +1482,16 @@ def run_single_push_conversion(
       **push_kwargs,
     )
     if pushed:
+      if (
+        decision.seconds_late is not None
+        and decision.seconds_late == 0
+        and push_feedback_accepts_seconds_late(canvas_assignment)
+      ):
+        if not clear_canvas_seconds_late_override(submission):
+          print(
+            f"Warning: Could not clear late penalty override for {canvas_name}.",
+            file=sys.stderr,
+          )
       pushed_count += 1
     else:
       failed_push_count += 1

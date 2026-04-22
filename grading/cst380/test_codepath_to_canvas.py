@@ -257,6 +257,176 @@ class CodePathToCanvasTests(unittest.TestCase):
     self.assertIn("Canvas roster student(s) have no CodePath match", stderr.getvalue())
     self.assertIn("Beta, Bob", stderr.getvalue())
 
+  def test_load_gradebook_assignment_rows_handles_duplicate_headers_and_score_column(self) -> None:
+    class FakeWorksheet:
+      def iter_rows(self, values_only: bool = False):
+        self.called_with_values_only = values_only
+        header = (
+          "Member ID",
+          "Github",
+          "Status",
+          "Full Name",
+          "Feature Score",
+          "Feature Score %",
+          "Updated Score?",
+          "Repo URL",
+          "Submission Report",
+          "Group",
+          "First Name",
+          "Last Name",
+          "Github Handle",
+          "Submitted",
+          "Updated",
+          "Score",
+          "Status",
+          "Submission URL",
+          "Notes",
+          "",
+          "",
+          "Member ID",
+          "Github",
+          "Status",
+          "Full Name",
+          "Feature Score",
+        )
+        student = (
+          999,
+          "octocat",
+          "Complete",
+          "Octo Cat",
+          "",
+          "100%",
+          "",
+          "",
+          "",
+          "G1",
+          "Octo",
+          "Cat",
+          "octocat",
+          "3/10 at 12:00pm PDT",
+          "3/10 at 12:05pm PDT",
+          "17",
+          "Complete",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+        )
+        return iter([
+          ("GM - 8 GRADEBOOK", None),
+          header,
+          student,
+        ])
+
+    class FakeWorkbook:
+      sheetnames = ["GM - 8"]
+
+      def __getitem__(self, name: str):
+        self.worksheet = FakeWorksheet()
+        return self.worksheet
+
+      def close(self):
+        return None
+
+    fake_workbook = FakeWorkbook()
+    fake_openpyxl = mock.Mock()
+    fake_openpyxl.load_workbook.return_value = fake_workbook
+
+    with mock.patch.dict(sys.modules, {"openpyxl": fake_openpyxl}):
+      rows, skip_message = codepath_to_canvas.load_gradebook_assignment_rows(
+        Path("Gradebook.xlsx"),
+        "GM - 8",
+      )
+
+    self.assertIsNone(skip_message)
+    self.assertEqual(len(rows), 1)
+    self.assertEqual(rows[0]["Member ID"], "999")
+    self.assertEqual(rows[0]["Full Name"], "Octo Cat")
+    self.assertEqual(rows[0]["Feature Score"], "17")
+    self.assertEqual(rows[0]["Submitted"], "3/10 at 12:00pm PDT")
+
+  def test_push_clears_late_override_when_seconds_late_is_zero(self) -> None:
+    args = mock.Mock()
+    args.base_points = 10.0
+    args.stretch_points = 0.0
+    args.ignore_points = 0.0
+    args.stretch_weight = 0.5
+    args.canvas_value = None
+    args.name_map = "missing_name_map.yaml"
+    args.write_suggestions = None
+    args.auto_match_threshold = 100
+    args.auto_match_gap = 4
+    args.suggestion_count = 3
+    args.prompt_for_matches = False
+    args.verbose = False
+    args.strict_deadlines = False
+    args.missing_as_zero = False
+    args.leave_not_graded_blank = False
+
+    class FakeSubmission:
+      def __init__(self):
+        self.edits: list[dict[str, object]] = []
+        self.submitted_at = "2026-03-10T11:00:00-07:00"
+        self.submission_type = "online_upload"
+        self.excused = False
+        self.attachments = []
+        self.body = ""
+        self.url = ""
+        self.media_comment_id = None
+
+      def edit(self, **kwargs):
+        self.edits.append(kwargs)
+        return True
+
+    class FakeAssignment:
+      id = 123
+      name = "unit7"
+      points_possible = 100
+      due_at = datetime(2026, 3, 10, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+
+      def __init__(self):
+        self.pushes: list[dict[str, object]] = []
+        self.submission = FakeSubmission()
+
+      def get_submission(self, user_id: int):
+        return self.submission
+
+      def push_feedback(self, *, user_id, score: float, comments: str, seconds_late: int | None = None, **kwargs):
+        self.pushes.append({"user_id": user_id, "score": score, "comments": comments, "seconds_late": seconds_late})
+        return True
+
+    assignment = FakeAssignment()
+    exit_code = codepath_to_canvas.run_single_push_conversion(
+      args=args,
+      codepath_path=None,
+      roster_rows=[{"Student": "Alpha, Alice", "ID": "1"}],
+      canvas_assignment=assignment,
+      assignment_name="unit7",
+      codepath_rows=[
+        {
+          "First Name": "Alice",
+          "Last Name": "Alpha",
+          "Feature Score": "10",
+          "Status": "Complete",
+          "Submitted": "3/10 at 11:59am PDT",
+          "Updated": "3/10 at 12:59pm PDT",
+        }
+      ],
+      push_enabled=True,
+    )
+
+    self.assertEqual(exit_code, 0)
+    self.assertEqual(assignment.pushes[0]["seconds_late"], 0)
+    self.assertIn(
+      {"submission": {"late_policy_status": "none", "seconds_late_override": 0}},
+      assignment.submission.edits,
+    )
+
   def test_main_writes_canvas_csv_and_name_map(self) -> None:
     with tempfile.TemporaryDirectory() as tempdir:
       root = Path(tempdir)
