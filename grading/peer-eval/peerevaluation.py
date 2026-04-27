@@ -1,5 +1,6 @@
 #!env python
 import argparse
+import csv
 import json
 import os.path
 import re
@@ -20,11 +21,12 @@ log.setLevel(logging.WARNING)
 colorama.init()
 
 class Evaluation(object):
-  def __init__(self, name, rating, explanation, self_eval_bool=False):
+  def __init__(self, name, rating, explanation, self_eval_bool=False, teammates=None):
     self.self_eval = self_eval_bool
     self.name = name.strip()
     self.rating = rating
     self.explanation = explanation
+    self.teammates = list(teammates or [])
     self.definitive_name = self_eval_bool # whether a name has been definitely matched or not
 
 
@@ -75,6 +77,8 @@ def load_name_file(name_yaml) -> Dict[str,str]:
   with open(name_yaml) as fid:
     names = yaml.safe_load(fid)
     for definitive_names, list_of_alternatives in names.items():
+      # Treat the YAML key as a valid match target too, not only the aliases.
+      name_correction_dict[definitive_names] = definitive_names
       for alternative in list_of_alternatives:
         name_correction_dict[alternative] = definitive_names
   
@@ -83,6 +87,14 @@ def load_name_file(name_yaml) -> Dict[str,str]:
 
 def normalize_dict_keys(source: Dict[str, str]) -> Dict[str, str]:
   return {normalize_name(k): v for k, v in source.items()}
+
+
+def resolve_name_with_corrections(name: str, name_correction_dict, normalized_name_correction_dict):
+  try:
+    return name_correction_dict[name]
+  except KeyError:
+    normalized_name = normalize_name(name)
+    return normalized_name_correction_dict.get(normalized_name, name)
 
 
 def parse_csv(csv_file, class_filter=None, assignment_filter=None) -> Dict[str, List[Evaluation]]:
@@ -159,10 +171,18 @@ def parse_csv(csv_file, class_filter=None, assignment_filter=None) -> Dict[str, 
       row,
       ["How would you rate your own performance?", "Rating"]
     )
+    teammates = []
+    self_eval = None
+
+    def add_teammate(name):
+      if len(name) < 2 or name.lower() in {"none", "n/a", "na"} or name.lower().startswith("no "):
+        return
+      teammates.append(name)
+
     if self_name and self_name.lower() != "none":
-      assignment_evals[assignment_key].append(
-        Evaluation(self_name, self_rating, "", True)
-      )
+      self_eval = Evaluation(self_name, self_rating, "", True)
+      self_eval.teammates = teammates
+      assignment_evals[assignment_key].append(self_eval)
 
     for column in df.columns:
       if not column.startswith("What is your teammate's name"):
@@ -173,6 +193,7 @@ def parse_csv(csv_file, class_filter=None, assignment_filter=None) -> Dict[str, 
       name = clean_value(row[column])
       if len(name) < 2 or name.lower() == "none" or name.lower().startswith("no "):
         continue
+      add_teammate(name)
       rating = row[rating_col] if rating_col in row.index else ""
       explanation = clean_value(row[comment_col]) if comment_col in row.index else ""
       assignment_evals[assignment_key].append(
@@ -182,9 +203,101 @@ def parse_csv(csv_file, class_filter=None, assignment_filter=None) -> Dict[str, 
   return assignment_evals
 
 
+def parse_old_online_csv(csv_file, class_filter=None, assignment_filter=None) -> Dict[str, List[Evaluation]]:
+  assignment_evals = defaultdict(list)
+  seen_submissions = set()
+  normalized_class_filter = normalize_name(class_filter) if class_filter else None
+  normalized_assignment_filter = normalize_name(assignment_filter) if assignment_filter else None
+
+  def clean_value(value):
+    if pd.isnull(value):
+      return ""
+    return str(value).strip()
+
+  def get_cell(row, index):
+    if index >= len(row):
+      return ""
+    return clean_value(row[index])
+
+  with open(csv_file, newline="") as fid:
+    reader = csv.reader(fid)
+    headers = next(reader, [])
+    if not headers:
+      return assignment_evals
+
+    for row in reader:
+      if not row:
+        continue
+
+      parsed_timestamp = pd.to_datetime(get_cell(row, 0), format="mixed", errors="coerce")
+      if pd.isna(parsed_timestamp):
+        continue
+      if parsed_timestamp < (pd.Timestamp.now() - pd.Timedelta(weeks=4)):
+        continue
+
+      class_name = "general"
+      programming_assignment = "old-online"
+      if normalized_class_filter and normalize_name(class_name) != normalized_class_filter:
+        continue
+      if normalized_assignment_filter and normalize_name(programming_assignment) != normalized_assignment_filter:
+        continue
+
+      assignment_key = f"{class_name} :: {programming_assignment}"
+
+      self_name = get_cell(row, 2)
+      self_rating = get_cell(row, 4)
+      self_explanation = get_cell(row, 5)
+      teammates = []
+      self_eval = None
+
+      row_key = (
+        normalize_name(self_name),
+        normalize_name(get_cell(row, 3)),
+        normalize_name(programming_assignment),
+      )
+      if row_key in seen_submissions:
+        log.debug(f"Skipping duplicate submission for {row_key}")
+        continue
+      seen_submissions.add(row_key)
+
+      if self_name and self_name.lower() != "none":
+        self_eval = Evaluation(self_name, self_rating, self_explanation, True)
+        assignment_evals[assignment_key].append(self_eval)
+
+      # Legacy online forms repeat teammate fields in name/rating/comment triplets.
+      for index in range(6, len(row), 3):
+        name = get_cell(row, index)
+        if len(name) < 2 or name.lower() in {"none", "n/a", "na"} or name.lower().startswith("no "):
+          continue
+        teammates.append(name)
+        rating = get_cell(row, index + 1)
+        explanation = get_cell(row, index + 2)
+        assignment_evals[assignment_key].append(
+          Evaluation(name, rating, explanation, False)
+        )
+      if self_eval is not None:
+        self_eval.teammates = teammates
+
+  return assignment_evals
+
+
 def correct_names(evaluations: List[Evaluation], name_correction_dict):
   log.info("Correcting names...")
   normalized_name_correction_dict = normalize_dict_keys(name_correction_dict)
+
+  def resolve(name: str):
+    return resolve_name_with_corrections(name, name_correction_dict, normalized_name_correction_dict)
+
+  # First pass: apply any explicit YAML match to every evaluation, including self-evals.
+  for eval in evaluations:
+    resolved_name = resolve(eval.name)
+    if resolved_name != eval.name:
+      eval.name = resolved_name
+      eval.definitive_name = True
+    else:
+      log.debug(f"No match found in correction dictionary for \"{eval.name}\"")
+
+  # Build the self-name reference list from canonicalized self-evals.
   self_name_lookup = {}
   self_names = []
   for eval in evaluations:
@@ -193,22 +306,10 @@ def correct_names(evaluations: List[Evaluation], name_correction_dict):
       if normalized not in self_name_lookup:
         self_name_lookup[normalized] = eval.name
         self_names.append(eval.name)
+      eval.teammates = [resolve(name) for name in eval.teammates]
   log.debug(self_names)
-  
-  # Update names based on passed-in dictionary
-  for eval in filter(lambda e: not e.definitive_name, evaluations):
-    try:
-      eval.name = name_correction_dict[eval.name]
-      eval.definitive_name = True
-    except KeyError:
-      normalized_name = normalize_name(eval.name)
-      if normalized_name in normalized_name_correction_dict:
-        eval.name = normalized_name_correction_dict[normalized_name]
-        eval.definitive_name = True
-      else:
-        log.debug(f"No match found in correction dictionary for \"{eval.name}\"")
-  
-  # Update names programatically
+
+  # Update names programatically for peer evaluations that still remain ambiguous.
   name_corrections_made = defaultdict(list)
   for eval in filter(lambda e: not e.definitive_name, evaluations):
     if not self_names:
@@ -258,12 +359,18 @@ def summarize_evals(evals: list[Evaluation], max_points):
     total_score = 0
     num_peer_reviews = 0
     has_self = False
+    expected_teammates = []
     for review in per_student_evals[name]:
       if review.self_eval:
         has_self = True
+        if review.teammates and not expected_teammates:
+          expected_teammates = review.teammates
       else:
-        total_score += review.rating
-        num_peer_reviews += 1
+        try:
+          total_score += float(review.rating)
+          num_peer_reviews += 1
+        except (TypeError, ValueError):
+          log.debug(f"Skipping non-numeric rating for {name}: {review.rating!r}")
     if num_peer_reviews == 0:
       rows.append({
         "name": name,
@@ -272,6 +379,7 @@ def summarize_evals(evals: list[Evaluation], max_points):
         "percent": None,
         "num_peer_reviews": 0,
         "has_self": has_self,
+        "expected_teammates": expected_teammates,
         "note": "no peer reviews",
       })
       continue
@@ -286,6 +394,7 @@ def summarize_evals(evals: list[Evaluation], max_points):
       "percent": (final_score / max_points) * 100 if max_points else 0,
       "num_peer_reviews": num_peer_reviews,
       "has_self": has_self,
+      "expected_teammates": expected_teammates,
       "note": "" if has_self else "missing self eval",
     })
   return rows
@@ -301,7 +410,7 @@ def pad_cell(text, width):
 
 
 def render_score_table(assignment, rows, max_points):
-  headers = ["Student", "Peer Avg", "Final", "Pct", "Peer Reviews", "Self", "Note"]
+  headers = ["Student", "Peer Avg", "Final", "Pct", "Peer Reviews", "Self", "Note", "Expected Teammates"]
   display_rows = []
   for row in rows:
     if row["peer_avg"] is None:
@@ -312,6 +421,7 @@ def render_score_table(assignment, rows, max_points):
       peer_avg = f"{row['peer_avg']:.2f}"
       final_score = f"{row['final_score']:.2f}/{max_points:.2f}"
       pct = f"{row['percent']:.0f}%"
+    expected_teammates = ", ".join(row["expected_teammates"]) if row["expected_teammates"] else "--"
     display_rows.append({
       "Student": row["name"],
       "Peer Avg": peer_avg,
@@ -320,6 +430,7 @@ def render_score_table(assignment, rows, max_points):
       "Peer Reviews": str(row["num_peer_reviews"]),
       "Self": "Y" if row["has_self"] else "N",
       "Note": row["note"],
+      "Expected Teammates": expected_teammates,
       "is_perfect": row["peer_avg"] is not None and round(row["percent"] or 0) == 100,
     })
 
@@ -358,6 +469,7 @@ def get_flags():
   parser.add_argument("--student_names_file", default="names.yaml")
   parser.add_argument("--assignment", default=None, help="Only process one programming assignment name")
   parser.add_argument("--class_name", default=None, help="Only process one class name")
+  parser.add_argument("--old-online", action="store_true", help="Parse legacy online peer-evaluation CSVs")
   parser.add_argument("--verbose", action="store_true", help="Show informational logging")
   
   return parser.parse_args()
@@ -371,11 +483,19 @@ def main():
   name_correction_dict = load_name_file(flags.student_names_file)
   
   # Load the evaluations up, grouped by class and assignment.
-  evaluations_by_assignment = parse_csv(
-    os.path.expanduser(flags.input_csv),
-    class_filter=flags.class_name,
-    assignment_filter=flags.assignment,
-  )
+  input_csv = os.path.expanduser(flags.input_csv)
+  if flags.old_online:
+    evaluations_by_assignment = parse_old_online_csv(
+      input_csv,
+      class_filter=flags.class_name,
+      assignment_filter=flags.assignment,
+    )
+  else:
+    evaluations_by_assignment = parse_csv(
+      input_csv,
+      class_filter=flags.class_name,
+      assignment_filter=flags.assignment,
+    )
 
   available_assignments = sorted(evaluations_by_assignment.keys())
   for assignment in available_assignments:
