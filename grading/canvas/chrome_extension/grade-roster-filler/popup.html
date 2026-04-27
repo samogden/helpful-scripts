@@ -25,6 +25,11 @@
         Alert on mismatches
       </label>
 
+      <label class="row">
+        <input id="reviewBeforeApply" type="checkbox" />
+        Review settings before applying
+      </label>
+
       <div class="buttons">
         <button id="applyBtn" class="primary" type="button">Apply to page</button>
         <button id="exportBtn" type="button">Export page HTML</button>
@@ -32,13 +37,46 @@
 
       <pre id="output" class="output" aria-live="polite"></pre>
 
+      <div class="links">
+        <a id="optionsLink" href="#">Open settings</a>
+      </div>
+
       <div class="hint">
         Targets rows like <code>trGRADE_ROSTER$0_row*</code>, and selects like
         <code>DERIVED_SR_RSTR_CRSE_GRADE_INPUT$*</code>.
       </div>
     </div>
 
+    <div id="reviewModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="reviewTitle">
+      <div class="modal">
+        <h2 id="reviewTitle">Review settings (this run)</h2>
+
+        <div class="grid">
+          <label class="row">
+            <input id="modalUseCeil" type="checkbox" />
+            Ceiling rounding
+          </label>
+          <label class="row">
+            <input id="modalShowAlert" type="checkbox" />
+            Alert on mismatches
+          </label>
+        </div>
+
+        <label class="label">
+          Override rules (JSON or YAML)
+          <textarea id="modalRules" spellcheck="false"></textarea>
+        </label>
+
+        <div class="modal-buttons">
+          <button id="modalCancelBtn" type="button">Cancel</button>
+          <button id="modalApplyOnceBtn" class="primary" type="button">Apply (once)</button>
+          <button id="modalSaveApplyBtn" type="button">Save &amp; apply</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="settings.js"></script>
+    <script src="js-yaml.min.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>
-

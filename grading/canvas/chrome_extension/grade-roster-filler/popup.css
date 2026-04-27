@@ -69,6 +69,16 @@ button:disabled {
   min-height: 62px;
 }
 
+.links {
+  margin-top: 8px;
+}
+
+.links a {
+  color: inherit;
+  opacity: 0.9;
+  text-decoration: underline;
+}
+
 .hint {
   margin-top: 8px;
   opacity: 0.85;
@@ -80,3 +90,67 @@ code {
   font-size: 12px;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+}
+
+.modal-backdrop.open {
+  display: flex;
+}
+
+.modal {
+  width: 100%;
+  max-width: 520px;
+  border-radius: 12px;
+  border: 1px solid rgba(127, 127, 127, 0.35);
+  background: rgba(30, 30, 30, 0.98);
+  color: inherit;
+  padding: 12px;
+}
+
+@media (prefers-color-scheme: light) {
+  .modal {
+    background: rgba(255, 255, 255, 0.98);
+  }
+}
+
+.modal h2 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.modal .grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.modal textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 110px;
+  border-radius: 10px;
+  padding: 8px;
+  border: 1px solid rgba(127, 127, 127, 0.35);
+  background: rgba(127, 127, 127, 0.08);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.modal .modal-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.modal .modal-buttons button {
+  flex: 1;
+}

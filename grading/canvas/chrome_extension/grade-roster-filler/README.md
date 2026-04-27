@@ -15,6 +15,45 @@ Fills PeopleSoft grade roster dropdowns from a CSV (e.g., a Canvas export), with
 3. Pick your CSV.
 4. Click **Apply to page**.
 
+## Settings
+
+Open settings via the popup link (**Open settings**) or Chrome’s extensions UI.
+
+- **Rounding**: round-to-nearest or ceiling
+- **Rubric**: customizable cutoff-to-letter mapping (JSON or YAML)
+- **Override rules**: optional column-based rules that can force a grade (JSON or YAML)
+- **Review before apply**: if enabled, clicking Apply opens a modal to tweak rules for this run (and optionally save)
+
+YAML parsing uses vendored `js-yaml` with `JSON_SCHEMA` (so it only reads JSON-like YAML types).
+
+Example override rule:
+
+```json
+[
+  { "column": "Programming Assignments", "min": 40, "grade": "F" }
+]
+```
+
+Same thing as YAML:
+
+```yaml
+- column: Programming Assignments
+  min: 40
+  grade: F
+```
+
+Multiple columns + aggregation:
+
+```yaml
+- columns:
+    - Participation 01
+    - Participation 02
+    - Participation 03
+  agg: avg
+  min: 70
+  grade: F
+```
+
 Matching order:
 1. Student ID (PeopleSoft `EMPLID` ↔ CSV `SIS User ID`, after stripping non-digits and leading zeros)
 2. Name key (`Last,First`) (also supports CSV names like `First Last` via heuristic)

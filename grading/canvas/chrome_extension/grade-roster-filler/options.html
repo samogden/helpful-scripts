@@ -1,0 +1,72 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Grade Roster Filler — Options</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="header">
+        <h1>Grade Roster Filler — Options</h1>
+        <p class="subtle">
+          Settings are stored in Chrome and used when you run the popup on a roster page.
+        </p>
+      </header>
+
+      <section class="card">
+        <h2>Rounding</h2>
+        <label class="row">
+          <input type="radio" name="rounding" value="round" checked />
+          Round to nearest (default)
+        </label>
+        <label class="row">
+          <input type="radio" name="rounding" value="ceil" />
+          Ceiling (matches <code>--round_weirdly</code>)
+        </label>
+      </section>
+
+      <section class="card">
+        <h2>Rubric</h2>
+        <p class="subtle">
+          JSON or YAML mapping of cutoffs to letter grades. The key means “if score is &lt; key, use this grade”.
+          Use <code>inf</code> for the final catch-all.
+        </p>
+        <textarea id="rubricJson" rows="10" spellcheck="false"></textarea>
+      </section>
+
+      <section class="card">
+        <h2>Override Rules (optional)</h2>
+        <p class="subtle">
+          JSON or YAML array of rules applied <em>after</em> the rubric.
+          Each rule supports either <code>column</code> (string) or <code>columns</code> (list), plus optional
+          <code>agg</code> (<code>min</code> | <code>max</code> | <code>avg</code>, default <code>avg</code>).
+        </p>
+        <textarea id="rulesJson" rows="10" spellcheck="false"></textarea>
+      </section>
+
+      <section class="card">
+        <h2>Defaults</h2>
+        <label class="row">
+          <input id="defaultShowAlert" type="checkbox" checked />
+          Show alert popup after apply
+        </label>
+        <label class="row">
+          <input id="reviewBeforeApply" type="checkbox" />
+          Review settings before applying
+        </label>
+      </section>
+
+      <div class="buttons">
+        <button id="saveBtn" class="primary" type="button">Save</button>
+        <button id="resetBtn" type="button">Reset to defaults</button>
+        <span id="status" class="status" aria-live="polite"></span>
+      </div>
+    </main>
+
+    <script src="settings.js"></script>
+    <script src="js-yaml.min.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>

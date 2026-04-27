@@ -1,4 +1,4 @@
-/* global chrome */
+/* global chrome, DEFAULT_SETTINGS, loadSettings, saveSettings, jsyaml */
 
 const elCsvFile = document.getElementById("csvFile");
 const elApplyBtn = document.getElementById("applyBtn");
@@ -6,6 +6,16 @@ const elExportBtn = document.getElementById("exportBtn");
 const elOutput = document.getElementById("output");
 const elUseCeilRounding = document.getElementById("useCeilRounding");
 const elShowAlert = document.getElementById("showAlert");
+const elOptionsLink = document.getElementById("optionsLink");
+const elReviewBeforeApply = document.getElementById("reviewBeforeApply");
+
+const elReviewModal = document.getElementById("reviewModal");
+const elModalUseCeil = document.getElementById("modalUseCeil");
+const elModalShowAlert = document.getElementById("modalShowAlert");
+const elModalRules = document.getElementById("modalRules");
+const elModalCancelBtn = document.getElementById("modalCancelBtn");
+const elModalApplyOnceBtn = document.getElementById("modalApplyOnceBtn");
+const elModalSaveApplyBtn = document.getElementById("modalSaveApplyBtn");
 
 function setOutput(text) {
   elOutput.textContent = text;
@@ -202,25 +212,61 @@ function parseNumber(value) {
   return Number.isFinite(num) ? num : null;
 }
 
-function toLetterGrade(score, useCeilRounding) {
-  // Mirrors convert_to_letter.py behavior:
-  // <60 F, 60-69 D, 70-72 C-, 73-76 C, 77-79 C+, 80-82 B-, 83-86 B,
-  // 87-89 B+, 90-92 A-, 93-96 A, >=97 A+.
-  const rounded = useCeilRounding ? Math.ceil(score) : Math.round(score);
-  if (rounded < 60) return "F";
-  if (rounded < 70) return "D";
-  if (rounded < 73) return "C-";
-  if (rounded < 77) return "C";
-  if (rounded < 80) return "C+";
-  if (rounded < 83) return "B-";
-  if (rounded < 87) return "B";
-  if (rounded < 90) return "B+";
-  if (rounded < 93) return "A-";
-  if (rounded < 97) return "A";
-  return "A+";
+function parseJsonOrYaml(text, kind) {
+  const raw = String(text || "").trim();
+  if (!raw) return kind === "rules" ? [] : {};
+  if (raw.startsWith("{") || raw.startsWith("[")) return JSON.parse(raw);
+  const parsed = jsyaml.load(raw, { schema: jsyaml.JSON_SCHEMA });
+  if (parsed == null) return kind === "rules" ? [] : {};
+  return parsed;
 }
 
-function pickGradeFromRow(row, useCeilRounding) {
+function normalizeColumnKey(key) {
+  return String(key || "")
+    .toLowerCase()
+    .replace(/[\u00A0]/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function buildColumnLookup(headerKeys) {
+  const map = Object.create(null);
+  for (const key of headerKeys || []) {
+    const nk = normalizeColumnKey(key);
+    if (!nk) continue;
+    if (!map[nk]) map[nk] = key;
+  }
+  return map;
+}
+
+function normalizeRubric(rubric) {
+  const raw = rubric && typeof rubric === "object" && !Array.isArray(rubric) ? rubric : DEFAULT_SETTINGS.rubric;
+  const entries = Object.entries(raw).map(([k, v]) => [String(k).trim().toLowerCase(), String(v).trim()]);
+  const parsed = [];
+  for (const [k, v] of entries) {
+    if (!v) continue;
+    if (k === "inf") {
+      parsed.push([Number.POSITIVE_INFINITY, v]);
+      continue;
+    }
+    const n = Number(k);
+    if (Number.isFinite(n)) parsed.push([n, v]);
+  }
+  parsed.sort((a, b) => a[0] - b[0]);
+  if (!parsed.some(([n]) => n === Number.POSITIVE_INFINITY)) parsed.push([Number.POSITIVE_INFINITY, "A+"]);
+  return parsed;
+}
+
+function scoreToLetterGrade(score, rounding, rubricPairs) {
+  const rounded = rounding === "ceil" ? Math.ceil(score) : Math.round(score);
+  for (const [cutoff, grade] of rubricPairs) {
+    if (rounded < cutoff) return grade;
+  }
+  return rubricPairs.length ? rubricPairs[rubricPairs.length - 1][1] : "A+";
+}
+
+function pickGradeFromRow(row, rounding, rubricPairs) {
   const possibleLetterKeys = ["Grade", "Final Grade", "Letter Grade"];
   for (const key of possibleLetterKeys) {
     const val = String(row[key] ?? "").trim();
@@ -231,17 +277,60 @@ function pickGradeFromRow(row, useCeilRounding) {
   const possibleNumericKeys = ["Current Score", "Final Score", "Score", "Grade (% )", "Grade (%)"];
   for (const key of possibleNumericKeys) {
     const n = parseNumber(row[key]);
-    if (n != null) return toLetterGrade(n, useCeilRounding);
+    if (n != null) return scoreToLetterGrade(n, rounding, rubricPairs);
   }
 
   return null;
 }
 
-function buildGradeIndex(csvObjects, useCeilRounding) {
+function applyOverrideRules(row, baseGrade, rules, columnLookup) {
+  if (!rules || rules.length === 0) return baseGrade;
+  let grade = baseGrade;
+
+  for (const rule of rules) {
+    if (!rule || typeof rule !== "object") continue;
+    const agg = String(rule.agg || "avg")
+      .trim()
+      .toLowerCase();
+    const columns = [];
+    if (typeof rule.column === "string" && rule.column.trim()) columns.push(rule.column.trim());
+    if (Array.isArray(rule.columns)) {
+      for (const c of rule.columns) if (typeof c === "string" && c.trim()) columns.push(c.trim());
+    }
+    if (columns.length === 0) continue;
+    const min = Number(rule.min);
+    const forced = String(rule.grade || "").trim();
+    if (!Number.isFinite(min) || !forced) continue;
+
+    const values = [];
+    for (const column of columns) {
+      const actualKey = columnLookup ? columnLookup[normalizeColumnKey(column)] : column;
+      const value = row[actualKey];
+      const n = parseNumber(value);
+      if (n == null) continue;
+      values.push(n <= 1 && min > 1 ? n * 100 : n);
+    }
+    if (values.length === 0) continue;
+
+    let combined = values[0];
+    if (agg === "min") combined = Math.min(...values);
+    else if (agg === "max") combined = Math.max(...values);
+    else if (agg === "avg") combined = values.reduce((a, b) => a + b, 0) / values.length;
+
+    if (combined < min) grade = forced;
+  }
+
+  return grade;
+}
+
+function buildGradeIndex(csvObjects, settings) {
   const gradeById = Object.create(null);
   const gradeByNameKey = Object.create(null);
   const ambiguousNameKeys = new Set();
   const candidatesByLast = Object.create(null);
+
+  const rubricPairs = normalizeRubric(settings.rubric);
+  const columnLookup = buildColumnLookup(Object.keys(csvObjects[0] || {}));
 
   let usable = 0;
   let skipped = 0;
@@ -250,7 +339,8 @@ function buildGradeIndex(csvObjects, useCeilRounding) {
     const student = String(row["Student"] ?? row["Name"] ?? "").trim();
     const sisId = row["SIS User ID"] ?? row["ID"] ?? row["SIS ID"] ?? "";
 
-    const grade = pickGradeFromRow(row, useCeilRounding);
+    const baseGrade = pickGradeFromRow(row, settings.rounding, rubricPairs);
+    const grade = baseGrade ? applyOverrideRules(row, baseGrade, settings.rules, columnLookup) : null;
     if (!grade) {
       skipped += 1;
       continue;
@@ -517,13 +607,92 @@ async function onApply() {
       return;
     }
 
-    elApplyBtn.disabled = true;
+    const storedSettings = { ...(DEFAULT_SETTINGS || {}), ...(await loadSettings()) };
+
+    if (elReviewBeforeApply.checked) {
+      openReviewModal(storedSettings);
+      return;
+    }
+
+    const runSettings = {
+      ...storedSettings,
+      rounding: elUseCeilRounding.checked ? "ceil" : "round",
+      defaultShowAlert: elShowAlert.checked,
+      reviewBeforeApply: elReviewBeforeApply.checked
+    };
+
+    await applyWithSettings(runSettings);
+  } catch (err) {
+    setOutput(`Error: ${err && err.message ? err.message : String(err)}`);
+  } finally {
+    elApplyBtn.disabled = false;
+  }
+}
+
+async function onExport() {
+  try {
+    elExportBtn.disabled = true;
+    setOutput("Exporting roster HTML (iframe-aware)...");
+    const tabId = await getActiveTabId();
+    const injectionResults = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: exportRosterHtml
+    });
+
+    const downloads = injectionResults.map((r) => r.result).filter((r) => r && r.downloaded);
+    if (downloads.length === 0) {
+      setOutput("No roster detected in any frame, so nothing was exported.");
+      return;
+    }
+
+    const total = downloads.reduce((n, d) => n + (d.rowCount || 0), 0);
+    setOutput(`Export triggered (check your downloads).\nRoster rows in exported doc(s): ${total}`);
+  } catch (err) {
+    setOutput(`Error: ${err && err.message ? err.message : String(err)}`);
+  } finally {
+    elExportBtn.disabled = false;
+  }
+}
+
+elApplyBtn.addEventListener("click", onApply);
+elExportBtn.addEventListener("click", onExport);
+
+elOptionsLink.addEventListener("click", (e) => {
+  e.preventDefault();
+  chrome.runtime.openOptionsPage();
+});
+
+function openReviewModal(storedSettings) {
+  elModalUseCeil.checked = (storedSettings.rounding || "round") === "ceil";
+  elModalShowAlert.checked = storedSettings.defaultShowAlert !== false;
+  elModalRules.value = jsyaml.dump(storedSettings.rules || [], {
+    schema: jsyaml.JSON_SCHEMA,
+    lineWidth: -1,
+    noRefs: true,
+    sortKeys: false
+  });
+  elReviewModal.classList.add("open");
+}
+
+function closeReviewModal() {
+  elReviewModal.classList.remove("open");
+}
+
+async function applyWithSettings(settings) {
+  const file = elCsvFile.files && elCsvFile.files[0];
+  if (!file) {
+    setOutput("Pick a CSV file first.");
+    return;
+  }
+
+  elApplyBtn.disabled = true;
+  try {
     setOutput("Reading CSV...");
 
     const text = await file.text();
     const rows = csvParse(text);
     const csvObjects = rowsToObjects(rows);
-    const index = buildGradeIndex(csvObjects, elUseCeilRounding.checked);
+    const index = buildGradeIndex(csvObjects, settings);
 
     if (index.usable === 0) {
       setOutput(
@@ -545,7 +714,7 @@ async function onApply() {
           gradeByNameKey: index.gradeByNameKey,
           ambiguousNameKeys: index.ambiguousNameKeys,
           candidatesByLast: index.candidatesByLast,
-          showAlert: elShowAlert.checked
+          showAlert: settings.defaultShowAlert !== false
         }
       ]
     });
@@ -598,37 +767,67 @@ async function onApply() {
       summarize(combined.missingOption, "Missing option");
 
     setOutput(summary.trim());
-  } catch (err) {
-    setOutput(`Error: ${err && err.message ? err.message : String(err)}`);
   } finally {
     elApplyBtn.disabled = false;
   }
 }
 
-async function onExport() {
+elReviewModal.addEventListener("click", (e) => {
+  if (e.target === elReviewModal) closeReviewModal();
+});
+elModalCancelBtn.addEventListener("click", closeReviewModal);
+elModalApplyOnceBtn.addEventListener("click", async () => {
   try {
-    elExportBtn.disabled = true;
-    setOutput("Exporting roster HTML (iframe-aware)...");
-    const tabId = await getActiveTabId();
-    const injectionResults = await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      func: exportRosterHtml
-    });
-
-    const downloads = injectionResults.map((r) => r.result).filter((r) => r && r.downloaded);
-    if (downloads.length === 0) {
-      setOutput("No roster detected in any frame, so nothing was exported.");
-      return;
-    }
-
-    const total = downloads.reduce((n, d) => n + (d.rowCount || 0), 0);
-    setOutput(`Export triggered (check your downloads).\nRoster rows in exported doc(s): ${total}`);
+    const storedSettings = { ...(DEFAULT_SETTINGS || {}), ...(await loadSettings()) };
+    const rules = parseJsonOrYaml(elModalRules.value, "rules");
+    const runSettings = {
+      ...storedSettings,
+      rounding: elModalUseCeil.checked ? "ceil" : "round",
+      defaultShowAlert: elModalShowAlert.checked,
+      rules
+    };
+    closeReviewModal();
+    await applyWithSettings(runSettings);
   } catch (err) {
     setOutput(`Error: ${err && err.message ? err.message : String(err)}`);
-  } finally {
-    elExportBtn.disabled = false;
   }
-}
+});
+elModalSaveApplyBtn.addEventListener("click", async () => {
+  try {
+    const storedSettings = { ...(DEFAULT_SETTINGS || {}), ...(await loadSettings()) };
+    const rules = parseJsonOrYaml(elModalRules.value, "rules");
+    const newSettings = {
+      ...storedSettings,
+      rounding: elModalUseCeil.checked ? "ceil" : "round",
+      defaultShowAlert: elModalShowAlert.checked,
+      reviewBeforeApply: true,
+      rules
+    };
+    await saveSettings(newSettings);
+    closeReviewModal();
+    await applyWithSettings(newSettings);
+  } catch (err) {
+    setOutput(`Error: ${err && err.message ? err.message : String(err)}`);
+  }
+});
 
-elApplyBtn.addEventListener("click", onApply);
-elExportBtn.addEventListener("click", onExport);
+elReviewBeforeApply.addEventListener("change", async () => {
+  try {
+    const storedSettings = { ...(DEFAULT_SETTINGS || {}), ...(await loadSettings()) };
+    await saveSettings({ ...storedSettings, reviewBeforeApply: elReviewBeforeApply.checked });
+  } catch {
+    // ignore
+  }
+});
+
+// Preload user defaults (best-effort).
+(async () => {
+  try {
+    const settings = { ...(DEFAULT_SETTINGS || {}), ...(await loadSettings()) };
+    elUseCeilRounding.checked = settings.rounding === "ceil";
+    elShowAlert.checked = settings.defaultShowAlert !== false;
+    elReviewBeforeApply.checked = settings.reviewBeforeApply === true;
+  } catch {
+    // ignore
+  }
+})();

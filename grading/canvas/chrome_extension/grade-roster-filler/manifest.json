@@ -3,10 +3,13 @@
   "name": "Grade Roster Filler",
   "version": "0.1.0",
   "description": "Fill PeopleSoft grade roster dropdowns from a CSV export (e.g., Canvas).",
-  "permissions": ["activeTab", "scripting"],
+  "permissions": ["activeTab", "scripting", "storage"],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
   "action": {
     "default_title": "Grade Roster Filler",
     "default_popup": "popup.html"
   }
 }
-
