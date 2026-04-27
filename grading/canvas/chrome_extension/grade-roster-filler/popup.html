@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Grade Roster Filler</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="container">
+      <h1>Grade Roster Filler</h1>
+
+      <label class="label">
+        CSV of final grades
+        <input id="csvFile" type="file" accept=".csv,text/csv" />
+      </label>
+
+      <label class="row">
+        <input id="useCeilRounding" type="checkbox" />
+        Use ceiling rounding (matches `--round_weirdly`)
+      </label>
+
+      <label class="row">
+        <input id="showAlert" type="checkbox" checked />
+        Alert on mismatches
+      </label>
+
+      <div class="buttons">
+        <button id="applyBtn" class="primary" type="button">Apply to page</button>
+        <button id="exportBtn" type="button">Export page HTML</button>
+      </div>
+
+      <pre id="output" class="output" aria-live="polite"></pre>
+
+      <div class="hint">
+        Targets rows like <code>trGRADE_ROSTER$0_row*</code>, and selects like
+        <code>DERIVED_SR_RSTR_CRSE_GRADE_INPUT$*</code>.
+      </div>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
+

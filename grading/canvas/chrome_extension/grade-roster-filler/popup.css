@@ -1,0 +1,82 @@
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+  font: 13px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  width: 360px;
+}
+
+.container {
+  padding: 12px 12px 10px;
+}
+
+h1 {
+  font-size: 14px;
+  margin: 0 0 10px;
+}
+
+.label {
+  display: block;
+  margin: 10px 0;
+}
+
+.label input[type="file"] {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 6px 0;
+}
+
+.buttons {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0 8px;
+}
+
+button {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(127, 127, 127, 0.35);
+  background: rgba(127, 127, 127, 0.12);
+  cursor: pointer;
+}
+
+button.primary {
+  border-color: rgba(62, 130, 247, 0.6);
+  background: rgba(62, 130, 247, 0.22);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.output {
+  white-space: pre-wrap;
+  margin: 0;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(127, 127, 127, 0.25);
+  min-height: 62px;
+}
+
+.hint {
+  margin-top: 8px;
+  opacity: 0.85;
+  font-size: 12px;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
