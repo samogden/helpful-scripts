@@ -4,6 +4,7 @@ import csv
 import json
 import os.path
 import re
+import unicodedata
 from collections import defaultdict
 from typing import List, Dict
 
@@ -20,6 +21,12 @@ log.setLevel(logging.WARNING)
 
 colorama.init()
 
+
+def recent_cutoff(weeks_back: int):
+  if weeks_back is None or weeks_back <= 0:
+    return None
+  return pd.Timestamp.now() - pd.Timedelta(weeks=weeks_back)
+
 class Evaluation(object):
   def __init__(self, name, rating, explanation, self_eval_bool=False, teammates=None):
     self.self_eval = self_eval_bool
@@ -32,6 +39,13 @@ class Evaluation(object):
 
 def normalize_name(name: str) -> str:
   return re.sub(r"\s+", " ", str(name).strip()).lower()
+
+
+def match_name_key(name: str) -> str:
+  raw = unicodedata.normalize("NFKD", str(name))
+  raw = raw.encode("ascii", "ignore").decode("ascii")
+  raw = re.sub(r"[^A-Za-z0-9]+", " ", raw).strip().lower()
+  return re.sub(r"\s+", " ", raw)
 
 
 LAST_NAME_PARTICLES = {
@@ -86,28 +100,36 @@ def load_name_file(name_yaml) -> Dict[str,str]:
 
 
 def normalize_dict_keys(source: Dict[str, str]) -> Dict[str, str]:
-  return {normalize_name(k): v for k, v in source.items()}
+  return {match_name_key(k): v for k, v in source.items()}
 
 
 def resolve_name_with_corrections(name: str, name_correction_dict, normalized_name_correction_dict):
   try:
     return name_correction_dict[name]
   except KeyError:
-    normalized_name = normalize_name(name)
+    normalized_name = match_name_key(name)
     return normalized_name_correction_dict.get(normalized_name, name)
 
 
-def parse_csv(csv_file, class_filter=None, assignment_filter=None) -> Dict[str, List[Evaluation]]:
+def parse_csv(
+  csv_file,
+  class_filter=None,
+  assignment_filter=None,
+  weeks_back=4,
+  default_class_name="general",
+) -> Dict[str, List[Evaluation]]:
   df = pd.read_csv(csv_file)
 
   df["_parsed_timestamp"] = pd.to_datetime(df["Timestamp"], format="mixed", errors="coerce")
   df = df[df["_parsed_timestamp"].notna()].copy()
-  df = df[df["_parsed_timestamp"] >= (pd.Timestamp.now() - pd.Timedelta(weeks=4))]
+  cutoff = recent_cutoff(weeks_back)
+  if cutoff is not None:
+    df = df[df["_parsed_timestamp"] >= cutoff]
   df = df.copy()
   df = df.sort_values("_parsed_timestamp", ascending=False)
 
   if "What class is this for?" not in df.columns:
-    df["What class is this for?"] = "general"
+    df["What class is this for?"] = default_class_name
 
   assignment_evals = defaultdict(list)
   seen_submissions = set()
@@ -203,7 +225,7 @@ def parse_csv(csv_file, class_filter=None, assignment_filter=None) -> Dict[str, 
   return assignment_evals
 
 
-def parse_old_online_csv(csv_file, class_filter=None, assignment_filter=None) -> Dict[str, List[Evaluation]]:
+def parse_old_online_csv(csv_file, class_filter=None, assignment_filter=None, weeks_back=4) -> Dict[str, List[Evaluation]]:
   assignment_evals = defaultdict(list)
   seen_submissions = set()
   normalized_class_filter = normalize_name(class_filter) if class_filter else None
@@ -232,7 +254,8 @@ def parse_old_online_csv(csv_file, class_filter=None, assignment_filter=None) ->
       parsed_timestamp = pd.to_datetime(get_cell(row, 0), format="mixed", errors="coerce")
       if pd.isna(parsed_timestamp):
         continue
-      if parsed_timestamp < (pd.Timestamp.now() - pd.Timedelta(weeks=4)):
+      cutoff = recent_cutoff(weeks_back)
+      if cutoff is not None and parsed_timestamp < cutoff:
         continue
 
       class_name = "general"
@@ -281,6 +304,17 @@ def parse_old_online_csv(csv_file, class_filter=None, assignment_filter=None) ->
   return assignment_evals
 
 
+def parse_old_cst380_csv(csv_file, class_filter=None, assignment_filter=None, weeks_back=4) -> Dict[str, List[Evaluation]]:
+  default_class_name = class_filter or "CST380"
+  return parse_csv(
+    csv_file,
+    class_filter=class_filter,
+    assignment_filter=assignment_filter,
+    weeks_back=weeks_back,
+    default_class_name=default_class_name,
+  )
+
+
 def correct_names(evaluations: List[Evaluation], name_correction_dict):
   log.info("Correcting names...")
   normalized_name_correction_dict = normalize_dict_keys(name_correction_dict)
@@ -290,9 +324,17 @@ def correct_names(evaluations: List[Evaluation], name_correction_dict):
 
   # First pass: apply any explicit YAML match to every evaluation, including self-evals.
   for eval in evaluations:
-    resolved_name = resolve(eval.name)
-    if resolved_name != eval.name:
-      eval.name = resolved_name
+    matched = False
+    if eval.name in name_correction_dict:
+      eval.name = name_correction_dict[eval.name]
+      matched = True
+    else:
+      normalized_name = match_name_key(eval.name)
+      if normalized_name in normalized_name_correction_dict:
+        eval.name = normalized_name_correction_dict[normalized_name]
+        matched = True
+
+    if matched:
       eval.definitive_name = True
     else:
       log.debug(f"No match found in correction dictionary for \"{eval.name}\"")
@@ -469,6 +511,8 @@ def get_flags():
   parser.add_argument("--student_names_file", default="names.yaml")
   parser.add_argument("--assignment", default=None, help="Only process one programming assignment name")
   parser.add_argument("--class_name", default=None, help="Only process one class name")
+  parser.add_argument("--weeks_back", default=4, type=int, help="Only include submissions from the last N weeks; set to 0 to disable the recency filter")
+  parser.add_argument("--old-cst380", action="store_true", help="Parse the older CST380 generalized peer-review form")
   parser.add_argument("--old-online", action="store_true", help="Parse legacy online peer-evaluation CSVs")
   parser.add_argument("--verbose", action="store_true", help="Show informational logging")
   
@@ -489,13 +533,33 @@ def main():
       input_csv,
       class_filter=flags.class_name,
       assignment_filter=flags.assignment,
+      weeks_back=flags.weeks_back,
+    )
+  elif flags.old_cst380:
+    evaluations_by_assignment = parse_old_cst380_csv(
+      input_csv,
+      class_filter=flags.class_name,
+      assignment_filter=flags.assignment,
+      weeks_back=flags.weeks_back,
     )
   else:
     evaluations_by_assignment = parse_csv(
       input_csv,
       class_filter=flags.class_name,
       assignment_filter=flags.assignment,
+      weeks_back=flags.weeks_back,
     )
+
+  if len(evaluations_by_assignment) == 0:
+    if flags.weeks_back and flags.weeks_back > 0:
+      log.warning(
+        "No submissions matched after applying the %d-week recency filter. "
+        "Use --weeks_back 0 to disable it or increase the window if this file is older.",
+        flags.weeks_back,
+      )
+    else:
+      log.warning("No submissions matched after parsing the CSV.")
+    return
 
   available_assignments = sorted(evaluations_by_assignment.keys())
   for assignment in available_assignments:
